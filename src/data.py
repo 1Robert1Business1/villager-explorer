@@ -101,7 +101,8 @@ def clean_villagers(raw: pd.DataFrame) -> pd.DataFrame:
     for col in ["title_color", "text_color"]:
         df[col] = ("#" + df[col]).where(df[col].notna())
 
-    return df.set_index("key", verify_integrity=True).sort_values("name", key=lambda s: s.str.casefold())
+    # 'key' uniqueness is validated above.
+    return df.set_index("key").sort_values("name", key=lambda s: s.str.casefold())
 
 
 @st.cache_data(show_spinner="Loading villagers…")
