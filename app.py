@@ -1,43 +1,22 @@
-"""Villager Explorer: entry point.
+"""Villager Explorer: entry point and navigation.
 
-Stage 1 skeleton: proves the environment runs and the villager data loads.
-Navigation between the Browse / Match / Compare views arrives in later stages.
+Each view is a page under views/. They share one data layer (src/data.py) and
+one filtering engine (src/filters.py). Navigation sits at the top so the
+sidebar belongs to the current view's controls.
 """
 
 import streamlit as st
 
-from src.data import data_report, load_villagers
-
 st.set_page_config(page_title="Villager Explorer", page_icon="🍃", layout="wide")
 
-villagers = load_villagers()
-report = data_report(villagers)
+pages = [
+    st.Page("views/browse.py", title="Browse", icon=":material/grid_view:", default=True),
+]
+page = st.navigation(pages, position="top")
+page.run()
 
-st.title("Villager Explorer")
-st.success(
-    f"Loaded {report.villagers} villagers "
-    f"({report.in_new_horizons} in New Horizons, {report.islanders} islanders)."
-)
-
-left, right = st.columns(2)
-with left:
-    st.subheader(f"Columns ({villagers.shape[1]})")
-    st.dataframe(
-        {"column": villagers.columns, "dtype": villagers.dtypes.astype(str).to_list()},
-        hide_index=True,
-    )
-with right:
-    st.subheader("Missing values")
-    st.caption("Hobby, styles, colours, song and icon exist only for New Horizons villagers.")
-    st.dataframe(
-        {"column": list(report.missing), "missing": list(report.missing.values())},
-        hide_index=True,
-    )
-
-st.subheader("Sample")
-st.dataframe(villagers.head(10))
-
-st.caption(
-    "Villager data from [Nookipedia](https://nookipedia.com) (CC BY-SA 3.0). "
-    "Fan-made; not affiliated with or endorsed by Nintendo."
+st.sidebar.divider()
+st.sidebar.caption(
+    "Villager data and images from [Nookipedia](https://nookipedia.com) "
+    "(CC BY-SA 3.0). Fan-made; not affiliated with or endorsed by Nintendo."
 )
