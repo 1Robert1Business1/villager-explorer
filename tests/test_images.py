@@ -193,6 +193,17 @@ def test_slow_images_render_as_pending_and_finish_in_background():
     assert cache.resolve(["slow"]).image == b"SLOW"
 
 
+def test_failures_are_logged_and_counted_by_reason(caplog):
+    cache, _ = make_cache({"dead": ImageFetchError("HTTP 404"), "ok": b"OK"})
+    with caplog.at_level("WARNING", logger="src.images"):
+        cache.prefetch([["dead"], ["ok"]], budget=5)
+    assert "dead" in caplog.text and "HTTP 404" in caplog.text
+    stats = cache.stats()
+    assert stats["loads_ok"] == 1 and stats["cached_thumbnails"] == 1
+    assert stats["failure_reasons"] == {"ImageFetchError: HTTP 404": 1}
+    assert stats["page_prefetch_ms"]["count"] == 1
+
+
 def test_each_worker_thread_gets_its_own_tls_session():
     # Regression guard: a truststore SSLContext shared across threads let concurrent
     # requests skip certificate verification (see src/images.py docstring).

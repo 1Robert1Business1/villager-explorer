@@ -37,10 +37,11 @@ host were accepted with a shared context, 0/60 with per-thread contexts.
 from __future__ import annotations
 
 import io
+import logging
 import ssl
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict, deque
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -65,6 +66,8 @@ MAX_WORKERS = 12
 USER_AGENT = "villager-explorer/1.0 (fan-made Streamlit app; images courtesy of Nookipedia)"
 
 PLACEHOLDER_PATH = Path(__file__).resolve().parent.parent / "assets" / "placeholder.png"
+
+log = logging.getLogger(__name__)
 
 
 class ImageFetchError(Exception):
@@ -215,6 +218,10 @@ class ThumbnailCache:
         self._inflight: dict[str, Future] = {}
         self._lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="thumb")
+        # Observability, surfaced on the diagnostics page and in logs.
+        self._loads_ok = 0
+        self._failure_reasons: Counter[str] = Counter()
+        self._prefetch_ms: deque[float] = deque(maxlen=50)
 
     # -- inspection (never blocks, never fetches)
 
@@ -259,12 +266,17 @@ class ThumbnailCache:
     def _load(self, url: str) -> None:
         try:
             thumb = self._loader(url)
-        except Exception:  # noqa: BLE001 - any failure becomes the placeholder
+        except Exception as exc:  # noqa: BLE001 - any failure becomes the placeholder
+            reason = f"{type(exc).__name__}: {exc}"[:120]
+            # Logged once per URL per FAILURE_TTL, so a dead link can't flood the logs.
+            log.warning("Image unavailable, showing placeholder: %s (%s)", url, reason)
             with self._lock:
                 self._failed[url] = self._clock()
                 self._inflight.pop(url, None)
+                self._failure_reasons[reason] += 1
             return
         with self._lock:
+            self._loads_ok += 1
             self._ok[url] = thumb
             self._ok.move_to_end(url)
             while len(self._ok) > self._max_entries:
@@ -280,6 +292,14 @@ class ThumbnailCache:
         still running at the deadline carries on in the background and shows up
         on the next rerun. Returns how many chains are still unresolved.
         """
+        started = time.perf_counter()
+        try:
+            return self._prefetch(chains, budget)
+        finally:
+            with self._lock:
+                self._prefetch_ms.append((time.perf_counter() - started) * 1000)
+
+    def _prefetch(self, chains: Iterable[Sequence[str]], budget: float) -> int:
         deadline = self._clock() + budget
         chains = [list(c) for c in chains if c]
         while True:
@@ -298,6 +318,25 @@ class ThumbnailCache:
             if not waiting or remaining <= 0:
                 return unresolved
             wait(waiting, timeout=remaining)
+
+    def stats(self) -> dict:
+        """A snapshot for the diagnostics page."""
+        with self._lock:
+            now = self._clock()
+            timings = sorted(self._prefetch_ms)
+            return {
+                "cached_thumbnails": len(self._ok),
+                "cached_bytes": sum(len(b) for b in self._ok.values()),
+                "in_flight": len(self._inflight),
+                "failing_now": sum(1 for t in self._failed.values() if now - t < self._failure_ttl),
+                "loads_ok": self._loads_ok,
+                "failure_reasons": dict(self._failure_reasons.most_common(10)),
+                "page_prefetch_ms": {
+                    "count": len(timings),
+                    "median": round(timings[len(timings) // 2]) if timings else None,
+                    "max": round(timings[-1]) if timings else None,
+                },
+            }
 
 
 _thread_local = threading.local()
@@ -319,6 +358,40 @@ def load_thumbnail(url: str) -> bytes:
 def get_thumbnail_cache() -> ThumbnailCache:
     """One cache and worker pool per server process, shared by all browser sessions."""
     return ThumbnailCache(load_thumbnail)
+
+
+SELF_TEST_GOOD = "https://dodo.ac/np/images/4/4f/Ace_NH_Villager_Icon.png"
+SELF_TEST_BAD = "https://untrusted-root.badssl.com/"  # a chain no trust store accepts
+
+
+def tls_self_test(concurrency: int = MAX_WORKERS) -> dict:
+    """Exercise the real fetch path the way the grid does (many threads at once).
+
+    Passes only if the image host is reachable *and* every request to an
+    untrusted-root host is rejected: proof that verification is on, under
+    concurrency, on whatever platform and trust store this is running on.
+    """
+
+    def probe(url: str) -> tuple[str, bool, str]:
+        try:
+            fetch_bytes(thread_session(), url)
+            return url, True, "ok"
+        except ImageFetchError as exc:
+            return url, False, str(exc)
+
+    urls = [SELF_TEST_GOOD] * (concurrency * 2) + [SELF_TEST_BAD] * concurrency
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        results = list(pool.map(probe, urls))
+    good = [r for r in results if r[0] == SELF_TEST_GOOD]
+    bad = [r for r in results if r[0] == SELF_TEST_BAD]
+    return {
+        "image_host_ok": f"{sum(ok for _, ok, _ in good)}/{len(good)}",
+        "untrusted_cert_accepted": f"{sum(ok for _, ok, _ in bad)}/{len(bad)}",
+        "untrusted_cert_errors": sorted({why for _, ok, why in bad if not ok}),
+        "passed": all(ok for _, ok, _ in good) and not any(ok for _, ok, _ in bad),
+        "elapsed_ms": round((time.perf_counter() - started) * 1000),
+    }
 
 
 def image_candidates(icon_url: str | None, image_url: str | None) -> list[str]:
