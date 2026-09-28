@@ -68,9 +68,14 @@ def test_placeholder_is_a_valid_thumbnail():
 # ------------------------------------------------------------------ fetch_bytes
 
 
+IMAGE_URL = "https://dodo.ac/np/images/x/xx/Test.png"  # allowlisted, so tests reach the session
+
+
 class FakeResponse:
     def __init__(self, status=200, body=b"", headers=None):
         self.status_code, self._body, self.headers = status, body, headers or {}
+        self.is_redirect = status in (301, 302, 303, 307, 308) and "Location" in self.headers
+        self.is_permanent_redirect = status in (301, 308) and "Location" in self.headers
 
     def iter_content(self, n):
         for i in range(0, len(self._body), n):
@@ -86,8 +91,10 @@ class FakeResponse:
 class FakeSession:
     def __init__(self, result):
         self.result = result
+        self.calls = []
 
     def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
@@ -106,13 +113,49 @@ class FakeSession:
 )
 def test_fetch_failures_raise_fetch_error(result, message):
     with pytest.raises(ImageFetchError, match=message):
-        fetch_bytes(FakeSession(result), "https://example.invalid/x.png")
+        fetch_bytes(FakeSession(result), IMAGE_URL)
 
 
 def test_fetch_stops_reading_oversized_body_without_content_length(monkeypatch):
     monkeypatch.setattr(images, "MAX_DOWNLOAD_BYTES", 1000)
     with pytest.raises(ImageFetchError, match="too large"):
-        fetch_bytes(FakeSession(FakeResponse(200, b"x" * 5000)), "https://example.invalid/x.png")
+        fetch_bytes(FakeSession(FakeResponse(200, b"x" * 5000)), IMAGE_URL)
+
+
+# ------------------------------------------------------------ SSRF protections
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://dodo.ac/np/images/a.png",  # plaintext
+        "https://evil.example/a.png",  # not allowlisted
+        "https://169.254.169.254/latest/meta-data/",  # cloud metadata endpoint
+        "https://localhost/admin",
+        "https://dodo.ac.evil.example/a.png",  # allowlisted name as a prefix
+        "https://user:pw@dodo.ac/a.png",  # embedded credentials
+        "https://dodo.ac:8443/a.png",  # non-default port
+        "file:///etc/passwd",
+    ],
+)
+def test_disallowed_urls_are_refused_before_any_request(url):
+    session = FakeSession(FakeResponse(200, png(10, 10)))
+    with pytest.raises(ImageFetchError, match="refusing"):
+        fetch_bytes(session, url)
+    assert session.calls == []  # nothing left the process
+
+
+def test_redirects_are_not_followed():
+    session = FakeSession(FakeResponse(302, headers={"Location": "https://169.254.169.254/"}))
+    with pytest.raises(ImageFetchError, match="refusing redirect"):
+        fetch_bytes(session, IMAGE_URL)
+    assert session.calls[0][1]["allow_redirects"] is False
+
+
+def test_session_has_no_plaintext_http_adapter():
+    session = images.build_session()
+    assert isinstance(session.get_adapter("https://dodo.ac/"), images._TruststoreAdapter)
+    assert not isinstance(session.get_adapter("http://dodo.ac/"), images._TruststoreAdapter)
 
 
 # --------------------------------------------------------------- ThumbnailCache
@@ -219,15 +262,29 @@ def test_each_worker_thread_gets_its_own_tls_session():
 def test_concurrent_fetches_reject_untrusted_certificates():
     bad, good = "https://untrusted-root.badssl.com/", "https://dodo.ac/np/images/4/4f/Ace_NH_Villager_Icon.png"
 
-    def accepted(url):
+    def outcome(url):
         try:
-            fetch_bytes(images.thread_session(), url)
-            return url == bad
-        except ImageFetchError:
-            return False
+            fetch_bytes(images.thread_session(), url, allowed_hosts=images.SELF_TEST_HOSTS)
+            return url, "ok"
+        except ImageFetchError as exc:
+            return url, str(exc)
 
     with ThreadPoolExecutor(12) as pool:
-        assert sum(pool.map(accepted, [good] * 40 + [bad] * 20)) == 0
+        results = list(pool.map(outcome, [good] * 40 + [bad] * 20))
+    # Bad-cert requests must fail in TLS itself (not be refused earlier, which would
+    # make this test pass without exercising verification), and good ones must load.
+    assert {why for url, why in results if url == bad} == {"SSLError"}
+    assert {why for url, why in results if url == good} == {"ok"}
+
+
+def test_self_test_only_passes_on_real_tls_rejection(monkeypatch):
+    # If the bad host were refused by the allowlist instead of by TLS, the self-test
+    # must report failure rather than a false "verification on".
+    monkeypatch.setattr(images, "SELF_TEST_HOSTS", images.IMAGE_HOSTS)
+    monkeypatch.setattr(images, "thread_session", lambda: FakeSession(FakeResponse(200, png(8, 8))))
+    result = images.tls_self_test(concurrency=2)
+    assert result["untrusted_cert_accepted"] == "0/2"
+    assert result["passed"] is False
 
 
 def test_candidates_prefer_icon_and_skip_missing():

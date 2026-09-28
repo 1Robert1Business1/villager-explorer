@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import html
+import re
 import sys
 from pathlib import Path
 from urllib.parse import unquote
@@ -95,6 +96,42 @@ def cargo_export(table: str, fields: list[str]) -> list[dict]:
     return rows
 
 
+_HEX6 = re.compile(r"[0-9a-fA-F]{6}")
+
+
+def hex_colour(value: object) -> str:
+    """Recover the 6-digit hex colour Cargo's JSON export may have turned into a number.
+
+    The export emits all-digit-looking colours as JSON numbers, so "515151" arrives
+    as 515151, "051515" loses its leading zero, and "7352e8" / "878e86" are read
+    as scientific notation (735200000000, 8.78e+88). Returns "" when there is no
+    colour; raises if a value can't be recovered, so bad data never ships.
+    """
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        text = value.strip().lstrip("#")
+    elif isinstance(value, int) and 0 <= value < 10**6:
+        text = str(value).zfill(6)
+    elif isinstance(value, (int, float)):
+        # Find the one "<digits>e<digits>" spelling, six characters long, equal to the value.
+        matches = {
+            f"{mantissa}e{exp}"
+            for exp in range(1, 100)
+            if (mantissa := round(value / 10**exp)) > 0
+            and len(f"{mantissa}e{exp}") == 6
+            and float(f"{mantissa}e{exp}") == float(value)
+        }
+        if len(matches) != 1:
+            raise ValueError(f"can't recover a hex colour from {value!r}: {sorted(matches)}")
+        text = matches.pop()
+    else:
+        raise ValueError(f"unexpected colour value {value!r}")
+    if not _HEX6.fullmatch(text):
+        raise ValueError(f"not a 6-digit hex colour: {value!r}")
+    return text.lower()
+
+
 def page_key(url: str) -> str:
     """'https://nookipedia.com/wiki/Carmen_(mouse)' -> 'Carmen_(mouse)' (stable, unique)."""
     return unquote(url.rsplit("/wiki/", 1)[1])
@@ -148,8 +185,8 @@ def build() -> list[dict]:
             "icon_url": nh.get("icon_url", ""),
             "photo_url": nh.get("photo_url", ""),
             "nookipedia_url": v["url"],
-            "title_color": v["title_color"],
-            "text_color": v["text_color"],
+            "title_color": hex_colour(v["title_color"]),
+            "text_color": hex_colour(v["text_color"]),
         })
 
     keys = [r["key"] for r in rows]

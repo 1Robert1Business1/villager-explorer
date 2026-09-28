@@ -21,7 +21,7 @@ import truststore
 from PIL import __version__ as pillow_version
 
 from src.data import load_villagers
-from src.images import get_thumbnail_cache, tls_self_test
+from src.images import SELF_TEST_COOLDOWN, get_thumbnail_cache, tls_self_test_throttled
 
 @st.cache_resource
 def _process_started() -> float:
@@ -91,9 +91,13 @@ with right:
         "default_cafile": paths.cafile,
         "default_capath": paths.capath,
     })
-    if st.button("Run TLS self-test", icon=":material/verified_user:"):
+    if st.button(
+        "Run TLS self-test",
+        icon=":material/verified_user:",
+        help=f"Runs at most once per {SELF_TEST_COOLDOWN} s per server; repeat clicks show the last result.",
+    ):
         with st.spinner("Fetching concurrently from the image host and an untrusted-root host…"):
-            result = tls_self_test()
+            result = tls_self_test_throttled()
         (st.success if result["passed"] else st.error)(
             "Verification on under concurrency" if result["passed"] else "Self-test FAILED"
         )
