@@ -7,6 +7,7 @@ nothing here can render a broken image.
 from __future__ import annotations
 
 import html
+import re
 from collections.abc import Callable
 
 import pandas as pd
@@ -24,9 +25,17 @@ GRID_KEY = "villager-grid"
 DEFAULT_CHIP = ("#e8eee4", "#2f3b2a")
 
 
+_HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def _safe_colour(value: object, default: str) -> str:
+    """Only strict #rrggbb reaches the style attribute; anything else could inject CSS/HTML."""
+    return value if isinstance(value, str) and _HEX_COLOUR.fullmatch(value) else default
+
+
 def _chip(name: str, background: object, text: object) -> str:
-    bg = background if isinstance(background, str) else DEFAULT_CHIP[0]
-    fg = text if isinstance(text, str) else DEFAULT_CHIP[1]
+    bg = _safe_colour(background, DEFAULT_CHIP[0])
+    fg = _safe_colour(text, DEFAULT_CHIP[1])
     return (
         f'<div style="text-align:center;line-height:1.9;margin-bottom:0.15rem">'
         f'<span style="background:{bg};color:{fg};'

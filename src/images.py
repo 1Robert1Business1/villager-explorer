@@ -49,6 +49,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 import streamlit as st
@@ -66,6 +67,12 @@ FAILURE_TTL = 300  # seconds before a failed URL is tried again
 MAX_CACHED = 1200  # thumbnails are ~10-15 KB, so this caps memory at roughly 15 MB
 MAX_WORKERS = 12
 USER_AGENT = "villager-explorer/1.0 (fan-made Streamlit app; images courtesy of Nookipedia)"
+
+# The only hosts the server will fetch from. Together with https-only and no
+# redirects, this keeps the image fetcher from being turned against anything
+# else (SSRF), e.g. a poisoned dataset refresh pointing at internal addresses,
+# or a redirect to a cloud metadata endpoint.
+IMAGE_HOSTS = frozenset({"dodo.ac"})
 
 PLACEHOLDER_PATH = Path(__file__).resolve().parent.parent / "assets" / "placeholder.png"
 
@@ -99,15 +106,35 @@ def build_session() -> requests.Session:
     session = requests.Session()
     session.headers["User-Agent"] = USER_AGENT
     adapter = _TruststoreAdapter(max_retries=retry, pool_connections=4, pool_maxsize=MAX_WORKERS)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
+    session.mount("https://", adapter)  # no http:// adapter: plaintext is never used
     return session
 
 
-def fetch_bytes(session: requests.Session, url: str) -> bytes:
-    """Download `url`, refusing error statuses and oversized bodies."""
+def check_url_allowed(url: str, allowed_hosts: frozenset[str] = IMAGE_HOSTS) -> None:
+    """Raise ImageFetchError unless `url` is https on an allowlisted host (no creds, default port)."""
+    parts = urlsplit(url)
+    if parts.scheme != "https":
+        raise ImageFetchError(f"refusing non-https URL scheme {parts.scheme!r}")
+    if parts.username or parts.password or parts.port not in (None, 443):
+        raise ImageFetchError("refusing URL with credentials or a non-default port")
+    if (parts.hostname or "").lower() not in allowed_hosts:
+        raise ImageFetchError(f"refusing host {parts.hostname!r} (not allowlisted)")
+
+
+def fetch_bytes(
+    session: requests.Session, url: str, allowed_hosts: frozenset[str] = IMAGE_HOSTS
+) -> bytes:
+    """Download `url`, refusing disallowed hosts, redirects, error statuses and oversized bodies."""
+    check_url_allowed(url, allowed_hosts)
     try:
-        with session.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), stream=True) as resp:
+        with session.get(
+            url,
+            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+            stream=True,
+            allow_redirects=False,  # a redirect could lead off the allowlist
+        ) as resp:
+            if resp.is_redirect or resp.is_permanent_redirect:
+                raise ImageFetchError(f"refusing redirect (HTTP {resp.status_code})")
             if resp.status_code != 200:
                 raise ImageFetchError(f"HTTP {resp.status_code}")
             declared = resp.headers.get("Content-Length")
@@ -364,19 +391,39 @@ def get_thumbnail_cache() -> ThumbnailCache:
 
 SELF_TEST_GOOD = "https://dodo.ac/np/images/4/4f/Ace_NH_Villager_Icon.png"
 SELF_TEST_BAD = "https://untrusted-root.badssl.com/"  # a chain no trust store accepts
+# The bad host must get as far as the TLS handshake, or the test would "pass"
+# on an allowlist refusal without exercising verification at all.
+SELF_TEST_HOSTS = IMAGE_HOSTS | {"untrusted-root.badssl.com"}
+SELF_TEST_COOLDOWN = 60  # seconds; the page is public, so it mustn't be a traffic generator
+
+_self_test_lock = threading.Lock()
+_self_test_last: tuple[float, dict] | None = None
+
+
+def tls_self_test_throttled() -> dict:
+    """tls_self_test at most once per SELF_TEST_COOLDOWN per process; otherwise the last result."""
+    global _self_test_last
+    with _self_test_lock:  # also serialises concurrent clicks from different sessions
+        now = time.monotonic()
+        if _self_test_last and now - _self_test_last[0] < SELF_TEST_COOLDOWN:
+            age = round(now - _self_test_last[0])
+            return {**_self_test_last[1], "cached_result_age_s": age}
+        result = tls_self_test()
+        _self_test_last = (time.monotonic(), result)
+        return result
 
 
 def tls_self_test(concurrency: int = MAX_WORKERS) -> dict:
     """Exercise the real fetch path the way the grid does (many threads at once).
 
     Passes only if the image host is reachable *and* every request to an
-    untrusted-root host is rejected: proof that verification is on, under
-    concurrency, on whatever platform and trust store this is running on.
+    untrusted-root host fails TLS verification: proof that verification is on,
+    under concurrency, on whatever platform and trust store this is running on.
     """
 
     def probe(url: str) -> tuple[str, bool, str]:
         try:
-            fetch_bytes(thread_session(), url)
+            fetch_bytes(thread_session(), url, allowed_hosts=SELF_TEST_HOSTS)
             return url, True, "ok"
         except ImageFetchError as exc:
             return url, False, str(exc)
@@ -387,11 +434,16 @@ def tls_self_test(concurrency: int = MAX_WORKERS) -> dict:
         results = list(pool.map(probe, urls))
     good = [r for r in results if r[0] == SELF_TEST_GOOD]
     bad = [r for r in results if r[0] == SELF_TEST_BAD]
+    bad_errors = sorted({why for _, ok, why in bad if not ok})
     return {
         "image_host_ok": f"{sum(ok for _, ok, _ in good)}/{len(good)}",
         "untrusted_cert_accepted": f"{sum(ok for _, ok, _ in bad)}/{len(bad)}",
-        "untrusted_cert_errors": sorted({why for _, ok, why in bad if not ok}),
-        "passed": all(ok for _, ok, _ in good) and not any(ok for _, ok, _ in bad),
+        "untrusted_cert_errors": bad_errors,
+        "passed": (
+            all(ok for _, ok, _ in good)
+            and not any(ok for _, ok, _ in bad)
+            and bad_errors == ["SSLError"]  # rejected by TLS itself, not by something earlier
+        ),
         "elapsed_ms": round((time.perf_counter() - started) * 1000),
     }
 
