@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src.components import villager_grid
+from src.components import PAGE_SIZE, villager_details, villager_grid
 from src.data import load_villagers
 from src.filters import (
     FACETS,
@@ -24,8 +24,6 @@ from src.filters import (
     facet_options,
     sort_villagers,
 )
-
-PAGE_SIZE = 36
 
 SEARCH = "browse_search"
 NH_ONLY = "browse_nh_only"
@@ -176,15 +174,18 @@ def render() -> None:
     in_scope = len(base_pool(villagers, criteria.nh_only))
     if matches.empty:
         _empty_state(villagers, criteria)
+        villager_details(villagers)
         return
 
-    shown = matches.head(st.session_state[LIMIT])
+    limit = st.session_state[LIMIT]
+    shown = matches.head(limit)
     if criteria.is_unconstrained:
         st.caption(f"All {in_scope} villagers {scope}. Showing {len(shown)}.")
     else:
         st.caption(f"{len(matches)} of {in_scope} villagers {scope} match. Showing {len(shown)}.")
 
-    villager_grid(shown)
+    villager_grid(shown, upcoming=matches.iloc[limit : limit + PAGE_SIZE])
+    villager_details(villagers)
 
     if len(shown) < len(matches):
         remaining = len(matches) - len(shown)
