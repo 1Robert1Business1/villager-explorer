@@ -198,10 +198,20 @@ def _drawn_placeholder(size: int = THUMB_SIZE) -> bytes:
 
 @st.cache_data(show_spinner=False)
 def placeholder_bytes() -> bytes:
+    """Shown when every image candidate for a villager has failed."""
     try:
         return to_thumbnail(PLACEHOLDER_PATH.read_bytes())
     except (OSError, ImageFetchError):
         return _drawn_placeholder()
+
+
+@st.cache_data(show_spinner=False)
+def loading_placeholder_bytes() -> bytes:
+    """The placeholder at low opacity: "on its way", distinct from "unavailable"."""
+    with Image.open(io.BytesIO(placeholder_bytes())) as img:
+        rgba = img.convert("RGBA")
+    rgba.putalpha(rgba.getchannel("A").point(lambda a: a * 35 // 100))
+    return _encode_png(rgba)
 
 
 # ------------------------------------------------------------------------ cache
