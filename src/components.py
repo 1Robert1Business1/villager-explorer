@@ -1,8 +1,17 @@
 """Reusable Streamlit UI pieces: the villager card, the card grid and the details dialog.
 
 Images come from src.images as already-validated bytes or a placeholder, so
-nothing here can render a broken image. Text that comes from the dataset is
-escaped before it reaches markdown or HTML.
+nothing here can render a broken image.
+
+Dataset text never goes through markdown
+----------------------------------------
+Free text from the dataset (names, catchphrases, quotes, songs, outfits) is
+rendered only with st.html after html.escape. st.html does not interpret
+markdown, so Streamlit shortcodes (:material/...:), links, images, LaTeX and
+auto-linked URLs can't come from data, whatever syntax Streamlit adds later.
+This was verified by rendering hostile strings in a real 1.64 page. The few
+places Streamlit renders markdown from data (pills options) only receive
+category values, which src/data.py allowlists to plain words at load time.
 
 Progressive grid
 ----------------
@@ -84,6 +93,36 @@ COLOUR_SWATCHES = {
     "Colorful": "conic-gradient(#d64545, #f2cf2e, #3a9d4a, #3069d0, #8a58cc, #d64545)",
 }
 
+# One stylesheet for every st.html block. Classes, not data-driven inline styles;
+# the only per-villager style values are validated hex colours (see _safe_colour).
+# Secondary text uses opacity on the inherited colour so it suits light and dark themes.
+_CSS = f"""
+.st-key-{GRID_KEY} {{ align-items: stretch; }}
+.vx-chip-row {{ text-align: center; line-height: 1.9; margin: 0.1rem 0 0.45rem; }}
+.vx-chip {{ padding: 0.15rem 0.7rem; border-radius: 999px; font-weight: 600; display: inline-block; }}
+.vx-meta {{ text-align: center; font-size: 0.875rem; line-height: 1.5; opacity: 0.72; }}
+.vx-icon {{ font-family: 'Material Symbols Rounded'; font-weight: 400; font-style: normal;
+           font-size: 1.05em; line-height: 1; vertical-align: -0.18em; letter-spacing: normal;
+           text-transform: none; white-space: nowrap; font-feature-settings: 'liga';
+           margin-right: 0.2em; }}
+.vx-sr {{ position: absolute; width: 1px; height: 1px; overflow: hidden;
+         clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }}
+.vx-facts {{ display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 0.8rem; margin: 0; }}
+.vx-facts dt {{ font-weight: 600; }}
+.vx-facts dd {{ margin: 0; }}
+.vx-quote {{ border-left: 3px solid rgba(128,128,128,0.45); padding: 0.1rem 0 0.1rem 0.8rem;
+            font-style: italic; opacity: 0.8; margin: 0.4rem 0; }}
+.vx-swatch {{ display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 0.9rem; }}
+.vx-dot {{ width: 0.9rem; height: 0.9rem; border-radius: 50%; display: inline-block;
+          border: 1px solid rgba(128,128,128,0.6); }}
+"""
+
+
+def _inject_css() -> None:
+    """Style-only st.html goes to the event container: takes no space, applies page-wide."""
+    st.html(f"<style>{_CSS}</style>")
+
+
 # ------------------------------------------------------------------- colour
 
 
@@ -119,49 +158,63 @@ def readable_text_colour(background: str) -> str:
     return TEXT_ON_DARK
 
 
-def _chip(name: str, background: object, size: str = "0.95rem") -> str:
+# --------------------------------------------------------------- HTML pieces
+# Pure functions returning HTML strings, so escaping is unit-testable without Streamlit.
+
+
+def text(value: object) -> str:
+    """Dataset value as escaped HTML text, or Unknown."""
+    return html.escape(str(value)) if isinstance(value, str) and value else UNKNOWN
+
+
+def chip_html(name: str, background: object, size: str = "0.95rem") -> str:
     """The villager's name on their wiki colour, with text picked for legibility."""
     bg = _safe_colour(background, DEFAULT_CHIP_BG)
     fg = readable_text_colour(bg)
     return (
-        f'<div style="text-align:center;line-height:1.9;margin:0.1rem 0 0.45rem">'
-        f'<span style="background:{bg};color:{fg};'
-        f"padding:0.15rem 0.7rem;border-radius:999px;font-weight:600;font-size:{size};"
-        f'display:inline-block">{html.escape(name)}</span></div>'
+        f'<div class="vx-chip-row"><span class="vx-chip" '
+        f'style="background:{bg};color:{fg};font-size:{size}">{html.escape(name)}</span></div>'
     )
 
 
-# --------------------------------------------------------------------- text
-
-
-_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()<>#+\-.!|~$])")
-_ZWSP = "​"
-
-
-def escape_markdown(text: object) -> str:
-    """Make dataset text inert in st.markdown/st.caption.
-
-    Backslash escapes stop links, images, emphasis and LaTeX. They don't stop
-    two things, verified by rendering: Streamlit's :material/...: shortcodes
-    (expanded after markdown parsing) and GFM auto-links of bare URLs, www.
-    hosts and emails. An invisible zero-width space after ":" and "@" and inside
-    "www" breaks both without changing what the text looks like. (A space after
-    "www." was not enough; the www. auto-link still fired.)
-    """
-    escaped = _MARKDOWN_SPECIAL.sub(r"\\\1", str(text))
-    escaped = escaped.replace(":", ":" + _ZWSP).replace("@", "@" + _ZWSP)
-    return re.sub(r"(?i)w(?=ww)", lambda m: m.group(0) + _ZWSP, escaped)
-
-
-def _value(v: object) -> str:
-    return escape_markdown(v) if isinstance(v, str) and v else UNKNOWN
+def _icon(name: str, label: str) -> str:
+    """A decorative Material icon; screen readers get `label` instead of the icon's name."""
+    return f'<span class="vx-icon" aria-hidden="true">{name}</span><span class="vx-sr">{label} </span>'
 
 
 def _short_birthday(villager: pd.Series) -> str:
     month, day = villager["birthday_month"], villager["birthday_day"]
     if pd.isna(month) or pd.isna(day):
         return UNKNOWN
-    return f"{str(month)[:3]} {day}"
+    return html.escape(f"{str(month)[:3]} {day}")
+
+
+def card_meta_html(villager: pd.Series) -> str:
+    return (
+        '<div class="vx-meta">'
+        f"{text(villager['species'])} · {text(villager['personality'])}<br>"
+        f"{_icon('interests', 'Hobby:')}{text(villager['hobby'])}&nbsp;&nbsp;"
+        f"{_icon('cake', 'Birthday:')}{_short_birthday(villager)}"
+        "</div>"
+    )
+
+
+def facts_html(rows: list[tuple[str, str]]) -> str:
+    """A definition list. Labels are fixed strings; values must already be escaped HTML."""
+    items = "".join(f"<dt>{label}</dt><dd>{value}</dd>" for label, value in rows)
+    return f'<dl class="vx-facts">{items}</dl>'
+
+
+def swatches_html(colours: tuple[str, ...]) -> str:
+    return "".join(
+        f'<span class="vx-swatch"><span class="vx-dot" '
+        f'style="background:{COLOUR_SWATCHES.get(name, "#cccccc")}"></span>{html.escape(name)}</span>'
+        for name in colours
+    )
+
+
+def _game(code: object) -> str:
+    return html.escape(GAME_NAMES.get(code, code)) if isinstance(code, str) else UNKNOWN
 
 
 # --------------------------------------------------------------------- card
@@ -180,13 +233,8 @@ def villager_card(key: str, villager: pd.Series, image: bytes | None, loading: b
         with st.container(width=IMAGE_WIDTH):
             fallback = loading_placeholder_bytes() if loading else placeholder_bytes()
             st.image(image if image is not None else fallback, width="stretch")
-        st.markdown(_chip(villager["name"], villager["title_color"]), unsafe_allow_html=True)
-        st.caption(
-            f"{_value(villager['species'])} · {_value(villager['personality'])}  \n"
-            f":material/interests: {_value(villager['hobby'])}"
-            f"&nbsp;&nbsp;:material/cake: {_short_birthday(villager)}",
-            text_alignment="center",
-        )
+        st.html(chip_html(villager["name"], villager["title_color"]))
+        st.html(card_meta_html(villager))
         if not villager["in_nh"]:
             st.badge("Not in New Horizons", color="gray")
         st.button(
@@ -212,7 +260,7 @@ def _render_grid(villagers: pd.DataFrame) -> None:
     chains = _chains(villagers)
     cache.prefetch(chains, budget=0)  # schedule next candidates (e.g. art after a dead icon)
 
-    st.html(f"<style>.st-key-{GRID_KEY} {{ align-items: stretch; }}</style>")
+    _inject_css()
     with st.container(horizontal=True, gap="xsmall", key=GRID_KEY):
         pending = 0
         for (key, villager), chain in zip(villagers.iterrows(), chains):
@@ -275,23 +323,6 @@ def _close_details() -> None:
     st.session_state[DETAIL_KEY] = None
 
 
-def _swatches(colours: tuple[str, ...]) -> str:
-    items = []
-    for name in colours:
-        fill = COLOUR_SWATCHES.get(name, "#cccccc")
-        items.append(
-            '<span style="display:inline-flex;align-items:center;gap:0.35rem;margin-right:0.9rem">'
-            f'<span style="width:0.9rem;height:0.9rem;border-radius:50%;background:{fill};'
-            'border:1px solid rgba(128,128,128,0.6);display:inline-block"></span>'
-            f"{html.escape(name)}</span>"
-        )
-    return "".join(items)
-
-
-def _fact(label: str, value: str) -> None:
-    st.markdown(f"**{label}:** {value}")
-
-
 def _nookipedia_url(url: object) -> str | None:
     """Only link to Nookipedia wiki pages; never pass arbitrary dataset URLs to the browser."""
     if isinstance(url, str) and url.startswith("https://nookipedia.com/wiki/"):
@@ -299,7 +330,52 @@ def _nookipedia_url(url: object) -> str | None:
     return None
 
 
+def details_profile_html(villager: pd.Series) -> str:
+    sub = villager["sub_personality"]
+    personality = text(villager["personality"]) + (
+        f" (sub-type {html.escape(sub)})" if isinstance(sub, str) else ""
+    )
+    rows = [
+        ("Species", text(villager["species"])),
+        ("Personality", personality),
+        ("Gender", text(villager["gender"])),
+    ]
+    sign = villager["sign"]
+    if isinstance(villager["birthday"], str):
+        rows.append(("Birthday", text(villager["birthday"]) + (f" ({html.escape(sign)})" if isinstance(sign, str) else "")))
+    else:
+        # Some early-game villagers have a star sign on record but no birthday.
+        rows.append(("Birthday", UNKNOWN))
+        if isinstance(sign, str):
+            rows.append(("Star sign", html.escape(sign)))
+    rows.append(("Hobby", text(villager["hobby"])))
+    catchphrase = villager["catchphrase"]
+    rows.append(("Catchphrase", f"“{html.escape(catchphrase)}”" if isinstance(catchphrase, str) else UNKNOWN))
+    return facts_html(rows)
+
+
+def details_favourites_html(villager: pd.Series) -> str:
+    styles, colours = villager["styles"], villager["colors"]
+    return facts_html([
+        ("Song", text(villager["favorite_song"])),
+        ("Styles", ", ".join(html.escape(s) for s in styles) if styles else UNKNOWN),
+        ("Colours", swatches_html(colours) if colours else UNKNOWN),
+    ])
+
+
+def details_appearances_html(villager: pd.Series) -> str:
+    games = villager["games"]
+    rows = [
+        ("Debut", _game(villager["debut"])),
+        ("Appears in", ", ".join(_game(g) for g in games) if games else UNKNOWN),
+    ]
+    if isinstance(villager["clothing"], str):
+        rows.append(("Default outfit", html.escape(villager["clothing"])))
+    return facts_html(rows)
+
+
 def _details_body(villager: pd.Series) -> None:
+    _inject_css()
     cache = get_thumbnail_cache()
     chain = image_candidates(villager["image_url"], villager["icon_url"])  # full art first
     with st.spinner("Loading artwork…"):
@@ -312,45 +388,17 @@ def _details_body(villager: pd.Series) -> None:
             with st.container(width=DETAIL_IMAGE_WIDTH):
                 fallback = loading_placeholder_bytes() if resolved.state == "pending" else placeholder_bytes()
                 st.image(resolved.image or fallback, width="stretch")
-            st.markdown(_chip(villager["name"], villager["title_color"], "1.1rem"), unsafe_allow_html=True)
+            st.html(chip_html(villager["name"], villager["title_color"], "1.1rem"))
     with right:
-        sub = villager["sub_personality"]
-        personality = _value(villager["personality"]) + (f" (sub-type {sub})" if isinstance(sub, str) else "")
-        _fact("Species", _value(villager["species"]))
-        _fact("Personality", personality)
-        _fact("Gender", _value(villager["gender"]))
-        sign = villager["sign"]
-        if isinstance(villager["birthday"], str):
-            birthday = _value(villager["birthday"])
-            _fact("Birthday", birthday + (f" ({escape_markdown(sign)})" if isinstance(sign, str) else ""))
-        else:
-            # Some early-game villagers have a star sign on record but no birthday.
-            _fact("Birthday", UNKNOWN)
-            if isinstance(sign, str):
-                _fact("Star sign", escape_markdown(sign))
-        _fact("Hobby", _value(villager["hobby"]))
-        catchphrase = villager["catchphrase"]
-        st.markdown(
-            f"**Catchphrase:** “{escape_markdown(catchphrase)}”" if isinstance(catchphrase, str)
-            else f"**Catchphrase:** {UNKNOWN}",
-            help=(
-                "The New Horizons catchphrase where the villager appears in New Horizons; "
-                "a few differ from their catchphrase in earlier games."
-            ) if villager["in_nh"] else None,
-        )
+        st.html(details_profile_html(villager))
+        if villager["in_nh"]:
+            st.caption("Catchphrases are the New Horizons ones; a few differ in earlier games.")
 
     if isinstance(villager["quote"], str):
-        st.markdown(f"> *{escape_markdown(villager['quote'])}*")
+        st.html(f'<blockquote class="vx-quote">{html.escape(villager["quote"])}</blockquote>')
 
     st.markdown("##### Favourites")
-    _fact("Song", _value(villager["favorite_song"]))
-    styles = villager["styles"]
-    _fact("Styles", ", ".join(escape_markdown(s) for s in styles) if styles else UNKNOWN)
-    colours = villager["colors"]
-    if colours:
-        st.markdown(f"**Colours:** {_swatches(colours)}", unsafe_allow_html=True)
-    else:
-        _fact("Colours", UNKNOWN)
+    st.html(details_favourites_html(villager))
     if not villager["in_nh"]:
         st.caption(
             "This villager isn't in New Horizons, so Nookipedia has no hobby, "
@@ -358,12 +406,7 @@ def _details_body(villager: pd.Series) -> None:
         )
 
     st.markdown("##### Appearances")
-    debut = villager["debut"]
-    _fact("Debut", escape_markdown(GAME_NAMES.get(debut, debut)) if isinstance(debut, str) else UNKNOWN)
-    games = villager["games"]
-    _fact("Appears in", ", ".join(escape_markdown(GAME_NAMES.get(g, g)) for g in games) if games else UNKNOWN)
-    if isinstance(villager["clothing"], str):
-        _fact("Default outfit", escape_markdown(villager["clothing"]))
+    st.html(details_appearances_html(villager))
 
     url = _nookipedia_url(villager["nookipedia_url"])
     if url:
@@ -378,6 +421,7 @@ def villager_details(villagers: pd.DataFrame) -> None:
     if key not in villagers.index:
         st.session_state[DETAIL_KEY] = None
         return
-    villager = villagers.loc[key]
-    dialog = st.dialog(villager["name"], width="medium", on_dismiss=_close_details)
-    dialog(_details_body)(villager)
+    # Fixed title: st.dialog titles render markdown, so dataset text stays out of it.
+    # The villager's name appears in the body, rendered through st.html.
+    dialog = st.dialog("Villager details", width="medium", on_dismiss=_close_details)
+    dialog(_details_body)(villagers.loc[key])

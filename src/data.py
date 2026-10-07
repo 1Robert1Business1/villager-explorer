@@ -12,6 +12,7 @@ The contract every view can rely on:
 * Filterable fields are Categorical with consistent casing.
 * `styles`, `colors` and `games` are tuples of strings (empty tuple if unknown).
 * HTML entities from the wiki ("K.K. D&amp;B") are decoded.
+* Category and style/colour values are plain words (PLAIN_LABEL), safe as filter labels.
 
 Coverage is uneven by design of the source: hobby, favourite styles/colours,
 favourite song and the small icon exist only for the 417 New Horizons villagers
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import calendar
 import html
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +44,12 @@ PAIRED_COLUMNS = {
 }
 
 MONTHS = list(calendar.month_name)[1:]
+
+# Category values become filter labels, and st.pills renders option labels as
+# markdown. So they must be plain words: letters, spaces, apostrophes,
+# ampersands and hyphens only. That is an allowlist, so no markdown or Streamlit
+# syntax (present or future) can come from the data through a filter label.
+PLAIN_LABEL = re.compile(r"[A-Za-z][A-Za-z '&-]*")
 
 
 def _decode_entities(value: str) -> str:
@@ -89,6 +97,12 @@ def clean_villagers(raw: pd.DataFrame) -> pd.DataFrame:
         normalised = [_normalise_case(df[first]), _normalise_case(df[second])]
         df[new_col] = [_to_tuple(a, b) for a, b in zip(*normalised)]
     df = df.drop(columns=[c for pair in PAIRED_COLUMNS.values() for c in pair])
+
+    labels = {(c, v) for c in CATEGORICAL_COLUMNS for v in df[c].cat.categories}
+    labels |= {(c, v) for c in PAIRED_COLUMNS for values in df[c] for v in values}
+    bad = sorted((c, v) for c, v in labels if not PLAIN_LABEL.fullmatch(v))
+    if bad:
+        raise ValueError(f"villagers.csv: category values must be plain words; got {bad[:5]}")
 
     df["games"] = [tuple(g.split("|")) if isinstance(g, str) else () for g in df["games"]]
 
