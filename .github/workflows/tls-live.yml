@@ -1,8 +1,11 @@
 name: tls-live
 
-# Live check that the image fetcher rejects untrusted certificates under
-# concurrency on Linux. Depends on badssl.com and dodo.ac being reachable, so it
-# is kept out of the main test workflow (and its badge).
+# Live checks that the image fetcher rejects untrusted certificates under
+# concurrency. The truststore bug this guards against is Windows/macOS-only, so
+# the job runs on Windows as well as Linux; on Windows a mutation check also
+# proves the bug still reproduces there (otherwise the guard proves nothing).
+# Depends on badssl.com and dodo.ac being reachable, so it is kept out of the
+# main test workflow (and its badge).
 on:
   push:
     branches: [main]
@@ -15,8 +18,12 @@ permissions:
 
 jobs:
   tls:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -27,6 +34,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements*.txt
       - run: python -m pip install -r requirements-dev.txt
-      - run: python -m pytest -q tests/test_images.py -k "untrusted_certificates"
+      - run: python -m pytest -q -m network -rA
         env:
           NETWORK_TESTS: "1"
+          REQUIRE_NETWORK_TESTS: "1"  # fail, rather than pass green, if nothing ran

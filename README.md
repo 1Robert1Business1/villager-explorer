@@ -24,7 +24,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-`$env:NETWORK_TESTS="1"; pytest` also runs a live check that concurrent image fetches reject untrusted TLS certificates. GitHub Actions runs the suite on Linux (Python 3.12, as deployed) on every push, and the live TLS check weekly.
+`$env:NETWORK_TESTS="1"; pytest` also runs the live TLS checks (tests marked `network`). GitHub Actions runs the suite on Linux (Python 3.12, as deployed) on every push. The live TLS checks run on push and weekly on Linux **and Windows**: the truststore bug they guard against is Windows/macOS-only, and on Windows a mutation check confirms that reverting the per-thread fix would be caught. CI fails if the network tests were skipped rather than run.
 
 ## How it's built
 
@@ -39,7 +39,7 @@ views/diagnostics.py  deployment monitoring (see below)
 ```
 
 - **Images** are fetched server-side, decoded and re-encoded before they reach the browser, so a dead or wrong image URL shows a placeholder, never a broken-image icon. The grid paints immediately and images fill in as they arrive.
-- **Security:** the fetcher only talks HTTPS to an allowlisted image host and never follows redirects (no SSRF). Dataset text is escaped before it reaches markdown or HTML. Name-chip text colour is chosen for WCAG AA contrast on every villager's colour.
+- **Security:** the fetcher only talks HTTPS to an allowlisted image host and never follows redirects (no SSRF). Dataset text never goes through markdown: free text is HTML-escaped into `st.html`, and category values (used as filter labels) are allowlisted to plain words at load. Name-chip text colour is chosen for WCAG AA contrast on every villager's colour.
 
 ### Deployment monitoring
 

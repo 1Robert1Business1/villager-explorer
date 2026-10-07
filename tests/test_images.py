@@ -1,7 +1,7 @@
 """Every way an image can fail must end in the placeholder, never an exception or a broken <img>."""
 
 import io
-import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -258,23 +258,55 @@ def test_each_worker_thread_gets_its_own_tls_session():
     assert images.thread_session() is images.thread_session()  # stable within a thread
 
 
-@pytest.mark.skipif(not os.environ.get("NETWORK_TESTS"), reason="set NETWORK_TESTS=1 to run")
-def test_concurrent_fetches_reject_untrusted_certificates():
-    bad, good = "https://untrusted-root.badssl.com/", "https://dodo.ac/np/images/4/4f/Ace_NH_Villager_Icon.png"
+# ------------------------------------------- live TLS regression (network tests)
+# The truststore bug these guard against only exists on Windows and macOS, so CI runs
+# them on windows-latest as well as ubuntu-latest (.github/workflows/tls-live.yml).
+
+BAD_CERT_URL = "https://untrusted-root.badssl.com/"
+GOOD_URL = "https://dodo.ac/np/images/4/4f/Ace_NH_Villager_Icon.png"
+BUG_PLATFORMS = ("win32", "darwin")  # truststore backends that toggle verify_mode
+
+
+def _concurrent_probe(get_session) -> list[tuple[str, str]]:
+    """The grid's access pattern: 12 threads, good and bad hosts interleaved."""
 
     def outcome(url):
         try:
-            fetch_bytes(images.thread_session(), url, allowed_hosts=images.SELF_TEST_HOSTS)
+            fetch_bytes(get_session(), url, allowed_hosts=images.SELF_TEST_HOSTS)
             return url, "ok"
         except ImageFetchError as exc:
             return url, str(exc)
 
     with ThreadPoolExecutor(12) as pool:
-        results = list(pool.map(outcome, [good] * 40 + [bad] * 20))
+        return list(pool.map(outcome, [GOOD_URL] * 40 + [BAD_CERT_URL] * 20))
+
+
+@pytest.mark.network
+def test_concurrent_fetches_reject_untrusted_certificates():
+    results = _concurrent_probe(images.thread_session)  # the production path
     # Bad-cert requests must fail in TLS itself (not be refused earlier, which would
     # make this test pass without exercising verification), and good ones must load.
-    assert {why for url, why in results if url == bad} == {"SSLError"}
-    assert {why for url, why in results if url == good} == {"ok"}
+    assert {why for url, why in results if url == BAD_CERT_URL} == {"SSLError"}
+    assert {why for url, why in results if url == GOOD_URL} == {"ok"}
+
+
+@pytest.mark.network
+@pytest.mark.skipif(sys.platform not in BUG_PLATFORMS, reason="the truststore bug is Windows/macOS-only")
+# Accepting bad certificates is the point of this test; urllib3 rightly warns about it.
+@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
+def test_regression_check_would_catch_a_reverted_fix():
+    """Mutation check: with the fix reverted (one Session shared by all threads),
+    the probe above must see bad certificates accepted on this platform.
+
+    This proves the regression test is actually guarding something on this runner.
+    If it starts failing, the bug no longer reproduces here (e.g. fixed upstream
+    in truststore): the per-thread sessions may no longer be needed, and the
+    regression test above has stopped proving anything on this platform.
+    """
+    shared = images.build_session()
+    results = _concurrent_probe(lambda: shared)
+    accepted = sum(1 for url, why in results if url == BAD_CERT_URL and why == "ok")
+    assert accepted > 0, "shared-context bypass did not reproduce; see docstring"
 
 
 def test_self_test_only_passes_on_real_tls_rejection(monkeypatch):

@@ -31,6 +31,29 @@ def test_every_image_url_is_https_on_the_allowlist(villagers):
 
 
 @pytest.mark.parametrize(
+    "column, value",
+    [
+        ("species", "[Cat](https://evil.example)"),
+        ("personality", ":material/warning: Peppy"),
+        ("hobby", "**Music**"),
+        ("fav_style1", "Cute $x$"),
+        ("fav_color1", "Red<img src=x>"),
+    ],
+)
+def test_markup_in_a_category_value_fails_the_load(column, value):
+    raw = pd.read_csv(DATA_PATH, dtype=str, keep_default_na=False)
+    raw.loc[raw.index[0], column] = value
+    with pytest.raises(ValueError, match="plain words"):
+        clean_villagers(raw)
+
+
+def test_real_category_values_are_plain_words(villagers):
+    # Loading succeeded, so the allowlist passed; spot-check the awkward ones.
+    assert "Bear cub" in villagers["species"].cat.categories
+    assert "Big sister" in villagers["personality"].cat.categories
+
+
+@pytest.mark.parametrize(
     "raw, expected",
     [
         (515151, "515151"),

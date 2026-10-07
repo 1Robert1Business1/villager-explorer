@@ -1,3 +1,4 @@
+import html
 import re
 
 import pandas as pd
@@ -5,14 +6,25 @@ import pytest
 
 from src.components import (
     DEFAULT_CHIP_BG,
-    _chip,
     _nookipedia_url,
     _safe_colour,
+    card_meta_html,
+    chip_html,
     contrast_ratio,
-    escape_markdown,
+    details_appearances_html,
+    details_favourites_html,
+    details_profile_html,
     readable_text_colour,
 )
 from src.data import DATA_PATH, clean_villagers
+
+
+@pytest.fixture(scope="module")
+def villagers():
+    return clean_villagers(pd.read_csv(DATA_PATH, dtype=str, keep_default_na=False))
+
+
+# --------------------------------------------------------------------- colour
 
 
 @pytest.mark.parametrize("value", ["#0961f6", "#FFFCE9"])
@@ -36,16 +48,6 @@ def test_anything_else_falls_back_to_default(value):
     assert _safe_colour(value, "#123456") == "#123456"
 
 
-def test_chip_escapes_name_and_rejects_hostile_colours():
-    out = _chip('<img src=x onerror=alert(1)>', '#000"><script>')
-    assert "<img" not in out and "<script>" not in out
-    assert "&lt;img" in out
-    assert DEFAULT_CHIP_BG in out
-
-
-# ------------------------------------------------------------------- contrast
-
-
 def test_contrast_ratio_known_values():
     assert contrast_ratio("#000000", "#ffffff") == pytest.approx(21.0)
     assert contrast_ratio("#8bcdea", "#fffad4") == pytest.approx(1.65, abs=0.01)  # wiki pair (Baabara)
@@ -56,20 +58,19 @@ def test_readable_text_meets_wcag_aa_on_any_background(bg):
     assert contrast_ratio(bg, readable_text_colour(bg)) >= 4.5
 
 
-def test_every_name_chip_in_the_dataset_meets_wcag_aa():
-    df = clean_villagers(pd.read_csv(DATA_PATH, dtype=str, keep_default_na=False))
-    backgrounds = df["title_color"].fillna(DEFAULT_CHIP_BG)
+def test_every_name_chip_in_the_dataset_meets_wcag_aa(villagers):
+    backgrounds = villagers["title_color"].fillna(DEFAULT_CHIP_BG)
     worst = min(contrast_ratio(bg, readable_text_colour(bg)) for bg in backgrounds)
     assert worst >= 4.5
 
 
-# ----------------------------------------------------------------------- text
+# ------------------------------------------------------------ dataset text
+# Dataset text is rendered only through st.html after html.escape. st.html does not
+# interpret markdown: every string below was rendered in a real Streamlit 1.64 page
+# and produced no link, image, icon, LaTeX, emphasis or HTML element, with the
+# visible text exactly equal to the input. These tests pin the escaping half.
 
-
-# Each case was rendered in a real Streamlit 1.64 page and confirmed inert (no icon,
-# link, image, LaTeX or emphasis element). Backslashes alone did NOT stop the
-# :material: icon or the bare-URL / www. auto-links; these tests pin the fix.
-HOSTILE_MARKDOWN = [
+HOSTILE = [
     ":material/warning: fake alert",
     ":smile: emoji",
     ":red[coloured]",
@@ -80,24 +81,46 @@ HOSTILE_MARKDOWN = [
     "mail me@evil.example",
     "$\\LaTeX$",
     "**bold** _italic_ `code`",
-    "<b>html</b>",
+    "<b>html</b><img src=x onerror=alert(1)>",
+    '"><script>alert(1)</script>',
 ]
 
 
-@pytest.mark.parametrize("hostile", HOSTILE_MARKDOWN)
-def test_escape_markdown_breaks_every_active_construct(hostile):
-    escaped = escape_markdown(hostile)
-    for token in ("](", "![", ":material", ":smile", ":red", "://", "www", "@evil", "**"):
-        assert token not in escaped, (token, escaped)
-    assert not re.search(r"(?<!\\)[`$_]", escaped), escaped  # code, LaTeX, emphasis stay escaped
+def _visible_text(fragment: str) -> str:
+    """Roughly what a browser shows: tags removed, entities decoded."""
+    return html.unescape(re.sub(r"<[^>]+>", "", fragment))
 
 
-@pytest.mark.parametrize("text", HOSTILE_MARKDOWN + ["K.K. Stroll", "Étoile", "Kiki & Lala tee"])
-def test_escape_markdown_leaves_visible_text_unchanged(text):
-    from src.components import _ZWSP
+def _hostile_villager(villagers, value):
+    v = villagers.loc["Ace"].copy()
+    for col in ("name", "catchphrase", "birthday", "favorite_song", "clothing", "quote"):
+        v[col] = value
+    v["games"] = (value,)
+    v["debut"] = value
+    return v
 
-    rendered = escape_markdown(text).replace(_ZWSP, "")
-    assert re.sub(r"\\(.)", r"\1", rendered) == text
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_dataset_text_is_escaped_into_html(villagers, hostile):
+    v = _hostile_villager(villagers, hostile)
+    rendered = [
+        chip_html(v["name"], v["title_color"]),
+        details_profile_html(v),
+        details_appearances_html(v),
+        details_favourites_html(v),
+    ]
+    for fragment in rendered:
+        assert "<script" not in fragment and "<img" not in fragment and "<b>" not in fragment
+        assert "​" not in fragment  # no hidden characters any more
+    assert hostile in _visible_text(rendered[0])  # the name renders exactly as written
+    assert hostile in _visible_text(rendered[1])  # so does the catchphrase/birthday
+
+
+def test_card_meta_hides_icon_names_from_screen_readers(villagers):
+    meta = card_meta_html(villagers.loc["Ace"])
+    assert 'aria-hidden="true">interests<' in meta and 'aria-hidden="true">cake<' in meta
+    assert "Hobby:" in meta and "Birthday:" in meta
+    assert "Nature" in meta and "Aug 11" in meta
 
 
 @pytest.mark.parametrize(
