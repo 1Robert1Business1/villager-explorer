@@ -38,7 +38,9 @@ import truststore
 truststore.inject_into_ssl()
 
 CARGO_EXPORT = "https://nookipedia.com/w/index.php"
-USER_AGENT = "villager-explorer dataset build (https://github.com/; Nookipedia CC BY-SA 3.0)"
+# Identifies the project (not a person) so the wiki's operators can see who is asking.
+# Never put a personal email or name here: the repo is public.
+USER_AGENT = "villager-explorer-dataset-build/1.0 (+https://github.com/1Robert1Business1/villager-explorer)"
 OUT_PATH = Path(__file__).resolve().parent.parent / "data" / "villagers.csv"
 
 # Game flags in the villager table, in release order, with display labels.

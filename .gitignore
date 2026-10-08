@@ -1,7 +1,14 @@
 .venv/
 __pycache__/
 *.pyc
-.streamlit/secrets.toml
+.pytest_cache/
 .DS_Store
 Thumbs.db
-.pytest_cache/
+
+# Secrets and local-only material: never commit.
+.streamlit/secrets.toml
+.env
+.env.*
+*.pem
+*.key
+scratchpad/

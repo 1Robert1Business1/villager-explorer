@@ -22,8 +22,8 @@ Pipeline for one villager
    the card gets the placeholder.
 
 TLS: requests verifies against the OS trust store via truststore, so this works
-behind antivirus or corporate TLS inspection (for example Norton Web Shield on
-the dev machine) without ever disabling verification. On Linux (Streamlit
+behind antivirus or corporate TLS inspection without ever disabling
+verification. On Linux (Streamlit
 Community Cloud) that is simply the system CA bundle.
 
 Each worker thread gets its own Session, and so its own truststore SSLContext.
@@ -66,7 +66,8 @@ MAX_SOURCE_PIXELS = 25_000_000  # refuse to decode anything implausibly large
 FAILURE_TTL = 300  # seconds before a failed URL is tried again
 MAX_CACHED = 1200  # thumbnails are ~10-15 KB, so this caps memory at roughly 15 MB
 MAX_WORKERS = 12
-USER_AGENT = "villager-explorer/1.0 (fan-made Streamlit app; images courtesy of Nookipedia)"
+# Identifies the project (not a person); never put a personal email or name here.
+USER_AGENT = "villager-explorer/1.0 (+https://github.com/1Robert1Business1/villager-explorer)"
 
 # The only hosts the server will fetch from. Together with https-only and no
 # redirects, this keeps the image fetcher from being turned against anything
