@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests
+import truststore
 from PIL import Image
 
 import src.images as images
@@ -305,8 +306,17 @@ def test_regression_check_would_catch_a_reverted_fix():
     """
     shared = images.build_session()
     results = _concurrent_probe(lambda: shared)
-    accepted = sum(1 for url, why in results if url == BAD_CERT_URL and why == "ok")
-    assert accepted > 0, "shared-context bypass did not reproduce; see docstring"
+    bad = [why for url, why in results if url == BAD_CERT_URL]
+    accepted = bad.count("ok")
+    assert accepted > 0, (
+        f"CANARY, not an app failure: the truststore shared-context bypass no longer "
+        f"reproduces on {sys.platform} (0 of {len(bad)} untrusted-root requests accepted with a "
+        f"shared session; truststore {truststore.__version__}). The upstream bug may be "
+        f"fixed. The app is still safe (it uses one session per thread), but "
+        f"test_concurrent_fetches_reject_untrusted_certificates no longer proves anything "
+        f"on this platform. Check the truststore changelog, then update or retire this "
+        f"canary and reconsider the per-thread workaround in src/images.py."
+    )
 
 
 def test_self_test_only_passes_on_real_tls_rejection(monkeypatch):
