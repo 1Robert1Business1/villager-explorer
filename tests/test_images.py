@@ -153,6 +153,17 @@ def test_redirects_are_not_followed():
     assert session.calls[0][1]["allow_redirects"] is False
 
 
+def test_tls_failures_are_not_retried_but_connection_timeouts_are():
+    from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, SSLError
+
+    retry = images.build_session().get_adapter("https://dodo.ac/").max_retries
+    with pytest.raises(MaxRetryError) as exc:
+        retry.increment(method="GET", url="/", error=SSLError("certificate verify failed"))
+    assert isinstance(exc.value.reason, SSLError)
+    # A connection timeout still gets its one retry.
+    assert retry.increment(method="GET", url="/", error=ConnectTimeoutError("slow")) is not None
+
+
 def test_session_has_no_plaintext_http_adapter():
     session = images.build_session()
     assert isinstance(session.get_adapter("https://dodo.ac/"), images._TruststoreAdapter)
@@ -282,13 +293,24 @@ def _concurrent_probe(get_session) -> list[tuple[str, str]]:
         return list(pool.map(outcome, [GOOD_URL] * 40 + [BAD_CERT_URL] * 20))
 
 
+def _verdict(results):
+    good = [why for url, why in results if url == GOOD_URL]
+    bad = [why for url, why in results if url == BAD_CERT_URL]
+    return images.classify_tls_probe(
+        good_ok=good.count("ok"), good_total=len(good),
+        bad_accepted=bad.count("ok"), bad_rejected_by_tls=bad.count("SSLError"), bad_total=len(bad),
+    )
+
+
 @pytest.mark.network
 def test_concurrent_fetches_reject_untrusted_certificates():
-    results = _concurrent_probe(images.thread_session)  # the production path
-    # Bad-cert requests must fail in TLS itself (not be refused earlier, which would
-    # make this test pass without exercising verification), and good ones must load.
-    assert {why for url, why in results if url == BAD_CERT_URL} == {"SSLError"}
-    assert {why for url, why in results if url == GOOD_URL} == {"ok"}
+    verdict, reason = _verdict(_concurrent_probe(images.thread_session))  # the production path
+    assert verdict != "failed", reason  # a bad certificate accepted: a real failure
+    if verdict == "inconclusive":
+        # An outage at the test hosts proves nothing either way. Skip, don't pass:
+        # with REQUIRE_NETWORK_TESTS=1 the run then fails as "nothing tested".
+        pytest.skip(reason)
+    assert verdict == "passed", reason
 
 
 @pytest.mark.network
@@ -308,6 +330,10 @@ def test_regression_check_would_catch_a_reverted_fix():
     results = _concurrent_probe(lambda: shared)
     bad = [why for url, why in results if url == BAD_CERT_URL]
     accepted = bad.count("ok")
+    if not accepted and bad.count("SSLError") < len(bad) // 2:
+        # Most probes never reached a TLS handshake: the test host is unreachable,
+        # so this run can't say whether the bypass still reproduces.
+        pytest.skip(f"inconclusive: only {bad.count('SSLError')} of {len(bad)} probes reached TLS")
     assert accepted > 0, (
         f"CANARY, not an app failure: the truststore shared-context bypass no longer "
         f"reproduces on {sys.platform} (0 of {len(bad)} untrusted-root requests accepted with a "
@@ -327,6 +353,23 @@ def test_self_test_only_passes_on_real_tls_rejection(monkeypatch):
     result = images.tls_self_test(concurrency=2)
     assert result["untrusted_cert_accepted"] == "0/2"
     assert result["passed"] is False
+    assert result["verdict"] == "inconclusive"  # never reached TLS, so nothing proven
+
+
+@pytest.mark.parametrize(
+    "counts, verdict",
+    [
+        (dict(good_ok=24, good_total=24, bad_accepted=0, bad_rejected_by_tls=12, bad_total=12), "passed"),
+        # Any acceptance is a failure, whatever else happened.
+        (dict(good_ok=24, good_total=24, bad_accepted=1, bad_rejected_by_tls=11, bad_total=12), "failed"),
+        (dict(good_ok=0, good_total=24, bad_accepted=1, bad_rejected_by_tls=0, bad_total=12), "failed"),
+        # Test host unreachable (timeouts): nothing accepted, nothing proven.
+        (dict(good_ok=24, good_total=24, bad_accepted=0, bad_rejected_by_tls=7, bad_total=12), "inconclusive"),
+        (dict(good_ok=20, good_total=24, bad_accepted=0, bad_rejected_by_tls=12, bad_total=12), "inconclusive"),
+    ],
+)
+def test_tls_probe_verdicts_separate_insecure_from_unreachable(counts, verdict):
+    assert images.classify_tls_probe(**counts)[0] == verdict
 
 
 def test_candidates_prefer_icon_and_skip_missing():

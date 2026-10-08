@@ -96,9 +96,12 @@ class _TruststoreAdapter(HTTPAdapter):
 def build_session() -> requests.Session:
     retry = Retry(
         total=1,
-        connect=1,
+        connect=1,  # connection timeouts/refusals/DNS blips are worth one retry
         read=0,
         status=1,
+        # Everything else, notably TLS certificate failures, fails immediately. A bad
+        # certificate is never transient; retrying only doubles the requests and logs.
+        other=0,
         backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET"}),
@@ -427,9 +430,13 @@ def tls_self_test_throttled() -> dict:
 def tls_self_test(concurrency: int = MAX_WORKERS) -> dict:
     """Exercise the real fetch path the way the grid does (many threads at once).
 
-    Passes only if the image host is reachable *and* every request to an
-    untrusted-root host fails TLS verification: proof that verification is on,
-    under concurrency, on whatever platform and trust store this is running on.
+    Verdict:
+    * "failed": an untrusted certificate was accepted. A real security failure.
+    * "inconclusive": nothing was accepted, but some probes never reached a TLS
+      handshake (test host unreachable, timeouts). Nothing proven either way.
+    * "passed": the image host loaded every time and every untrusted-root probe
+      was rejected by TLS verification itself. Proof that verification is on,
+      under concurrency, on whatever platform and trust store this runs on.
     """
 
     def probe(url: str) -> tuple[str, bool, str]:
@@ -445,18 +452,38 @@ def tls_self_test(concurrency: int = MAX_WORKERS) -> dict:
         results = list(pool.map(probe, urls))
     good = [r for r in results if r[0] == SELF_TEST_GOOD]
     bad = [r for r in results if r[0] == SELF_TEST_BAD]
-    bad_errors = sorted({why for _, ok, why in bad if not ok})
+    accepted = sum(ok for _, ok, _ in bad)
+    rejected_by_tls = sum(why == "SSLError" for _, ok, why in bad)
+    verdict, reason = classify_tls_probe(
+        good_ok=sum(ok for _, ok, _ in good), good_total=len(good),
+        bad_accepted=accepted, bad_rejected_by_tls=rejected_by_tls, bad_total=len(bad),
+    )
     return {
+        "verdict": verdict,
+        "reason": reason,
+        "passed": verdict == "passed",
         "image_host_ok": f"{sum(ok for _, ok, _ in good)}/{len(good)}",
-        "untrusted_cert_accepted": f"{sum(ok for _, ok, _ in bad)}/{len(bad)}",
-        "untrusted_cert_errors": bad_errors,
-        "passed": (
-            all(ok for _, ok, _ in good)
-            and not any(ok for _, ok, _ in bad)
-            and bad_errors == ["SSLError"]  # rejected by TLS itself, not by something earlier
-        ),
+        "untrusted_cert_accepted": f"{accepted}/{len(bad)}",
+        "untrusted_cert_rejected_by_tls": f"{rejected_by_tls}/{len(bad)}",
+        "untrusted_cert_errors": sorted({why for _, ok, why in bad if not ok}),
         "elapsed_ms": round((time.perf_counter() - started) * 1000),
     }
+
+
+def classify_tls_probe(
+    *, good_ok: int, good_total: int, bad_accepted: int, bad_rejected_by_tls: int, bad_total: int
+) -> tuple[str, str]:
+    """Shared by the self-test and the network tests, so both judge outcomes the same way."""
+    if bad_accepted:
+        return "failed", f"{bad_accepted} of {bad_total} untrusted certificates were ACCEPTED"
+    unreached = bad_total - bad_rejected_by_tls
+    if unreached or good_ok < good_total:
+        return "inconclusive", (
+            f"test hosts partly unreachable: {unreached} of {bad_total} untrusted-host probes "
+            f"never reached a TLS handshake, {good_total - good_ok} of {good_total} image fetches "
+            "failed. None were accepted, but nothing is proven; try again later"
+        )
+    return "passed", f"all {bad_total} untrusted certificates rejected by TLS; image host OK"
 
 
 def image_candidates(icon_url: str | None, image_url: str | None) -> list[str]:
