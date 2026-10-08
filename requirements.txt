@@ -3,3 +3,8 @@ pandas==3.0.6
 requests==2.34.2
 pillow==12.3.0
 truststore==0.10.4
+# Pinned below 25: pyarrow 25.0.x can segfault when first imported on a thread that
+# later exits (apache/arrow#50471), which is how Streamlit runs scripts. Streamlit
+# Community Cloud swaps 25.0.1 for 24.0.0 at deploy for this reason; pinning it here
+# keeps local, CI and Cloud on the same version. Revisit when a fixed release ships.
+pyarrow==24.0.0
