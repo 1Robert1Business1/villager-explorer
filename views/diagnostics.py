@@ -98,9 +98,13 @@ with right:
     ):
         with st.spinner("Fetching concurrently from the image host and an untrusted-root host…"):
             result = tls_self_test_throttled()
-        (st.success if result["passed"] else st.error)(
-            "Verification on under concurrency" if result["passed"] else "Self-test FAILED"
-        )
+        verdict = result["verdict"]
+        if verdict == "passed":
+            st.success("Verification on under concurrency")
+        elif verdict == "inconclusive":
+            st.warning(f"Inconclusive: {result['reason']}")
+        else:
+            st.error(f"Self-test FAILED: {result['reason']}")
         st.json(result)
 
 st.subheader("Image cache")
