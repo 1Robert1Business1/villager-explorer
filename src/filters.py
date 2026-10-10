@@ -169,6 +169,73 @@ def apply_criteria(df: pd.DataFrame, criteria: Criteria) -> pd.DataFrame:
     return pool[mask]
 
 
+# ------------------------------------------------------------------------ matching
+
+# Questions Find Your Match asks, in display order. Each is an ordinary facet.
+MATCH_FACETS = ("species", "personality", "hobby", "styles", "colors")
+
+
+def rank_matches(df: pd.DataFrame, preferences: Mapping[str, Collection[str]]) -> pd.DataFrame:
+    """Rank New Horizons villagers by how many answered questions they satisfy.
+
+    No new filtering logic: each answered question is one facet_mask, exactly as
+    Browse applies it (choosing Cat and Dog asks "Cat or Dog?"). A villager's
+    score is the number of answered questions they satisfy, so picking two
+    species never counts double. Villagers satisfying none are left out.
+
+    Always New Horizons only: hobby, styles and colours exist only for NH
+    villagers, so the 73 from earlier games can't be compared fairly.
+
+    Order is deterministic: score (high first), then name (accent- and
+    case-insensitive), then key. Ties read alphabetically, never randomly.
+
+    Adds columns:
+      match_score   questions satisfied
+      match_total   questions answered
+      matched       ((facet, value), ...) the villager's values that matched
+      missed        ((facet, value), ...) the answers they didn't meet
+    """
+    answered = {col: frozenset(vals) for col, vals in preferences.items() if vals}
+    unknown = set(answered) - set(FACETS)
+    if unknown:
+        raise ValueError(f"Unknown facet(s): {sorted(unknown)}. Known: {sorted(FACETS)}")
+
+    pool = base_pool(df, nh_only=True)
+    if not answered:
+        return pool.iloc[0:0].assign(match_score=0, match_total=0, matched=(), missed=())
+
+    order = [c for c in MATCH_FACETS if c in answered] + sorted(set(answered) - set(MATCH_FACETS))
+    masks = {col: facet_mask(pool, col, answered[col]) for col in order}
+    score = sum(mask.astype(int) for mask in masks.values())
+
+    def explain(key) -> tuple[tuple, tuple]:
+        matched, missed = [], []
+        for col in order:
+            chosen = answered[col]
+            if masks[col].at[key]:
+                value = pool.at[key, col]
+                values = [v for v in value if v in chosen] if FACETS[col].multi_valued else [str(value)]
+                matched.extend((col, v) for v in values)
+            else:
+                missed.extend((col, v) for v in sorted(chosen))
+        return tuple(matched), tuple(missed)
+
+    hits = pool[score > 0]
+    explained = [explain(key) for key in hits.index]
+    ranked = hits.assign(
+        match_score=score[score > 0],
+        match_total=len(answered),
+        matched=[m for m, _ in explained],
+        missed=[x for _, x in explained],
+    )
+    sort_keys = pd.DataFrame({
+        "by_score": -ranked["match_score"],
+        "by_name": ranked["name"].map(fold),
+        "by_key": ranked.index.astype(str),
+    }, index=ranked.index)
+    return ranked.loc[sort_keys.sort_values(["by_score", "by_name", "by_key"], kind="stable").index]
+
+
 # ------------------------------------------------------------------------- sorting
 
 

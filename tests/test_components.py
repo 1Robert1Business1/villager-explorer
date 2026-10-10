@@ -14,6 +14,7 @@ from src.components import (
     details_appearances_html,
     details_favourites_html,
     details_profile_html,
+    match_note_html,
     readable_text_colour,
 )
 from src.data import DATA_PATH, clean_villagers
@@ -114,6 +115,26 @@ def test_dataset_text_is_escaped_into_html(villagers, hostile):
         assert "​" not in fragment  # no hidden characters any more
     assert hostile in _visible_text(rendered[0])  # the name renders exactly as written
     assert hostile in _visible_text(rendered[1])  # so does the catchphrase/birthday
+
+
+def test_match_note_explains_score_matches_and_misses():
+    note = match_note_html(
+        (("species", "Cat"), ("personality", "Peppy"), ("hobby", "Fashion")),
+        (("styles", "Cute"),),
+        3, 4,
+    )
+    text = _visible_text(note)
+    assert "Matches 3 of 4: Cat, Peppy, Fashion hobby" in text
+    assert "Not: Cute style" in text
+    assert "Matches all 2: Cat, Blue" in _visible_text(match_note_html((("species", "Cat"), ("colors", "Blue")), (), 2, 2))
+    assert "Not:" not in match_note_html((("species", "Cat"),), (), 1, 1)
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_match_note_escapes_dataset_values(hostile):
+    note = match_note_html((("species", hostile),), (("hobby", hostile),), 1, 2)
+    assert "<script" not in note and "<img" not in note and "<b>" not in note
+    assert hostile in _visible_text(note)
 
 
 def test_card_meta_hides_icon_names_from_screen_readers(villagers):
