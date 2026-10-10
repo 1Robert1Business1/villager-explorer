@@ -71,8 +71,10 @@ left, right = st.columns(2)
 with left:
     st.subheader("Runtime")
     st.json({
-        "python": sys.version.split()[0],
-        "platform": platform.platform(),
+        # Coarse on purpose: the page is public, and exact kernel/glibc/patch versions
+        # only help fingerprint the host. Library versions are in requirements.txt anyway.
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "platform": f"{platform.system()} {platform.machine()}",
         "streamlit": st.__version__,
         "pandas": pd.__version__,
         "pillow": pillow_version,
@@ -84,12 +86,9 @@ with left:
     st.json(_memory())
 with right:
     st.subheader("TLS")
-    paths = ssl.get_default_verify_paths()
     st.json({
         "truststore_backend": TRUSTSTORE_BACKEND,
-        "openssl": ssl.OPENSSL_VERSION,
-        "default_cafile": paths.cafile,
-        "default_capath": paths.capath,
+        "openssl": f"OpenSSL {ssl.OPENSSL_VERSION_INFO[0]}.x",
     })
     if st.button(
         "Run TLS self-test",

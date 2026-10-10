@@ -27,13 +27,8 @@ verification. On Linux (Streamlit
 Community Cloud) that is simply the system CA bundle.
 
 Each worker thread gets its own Session, and so its own truststore SSLContext.
-This is a security requirement, not tidiness: truststore 0.10.4 (Windows and
-macOS backends) saves verify_mode, sets CERT_NONE for each handshake, and
-restores it afterwards. Overlapping handshakes on one shared context interleave
-those saves and restores and can leave it at CERT_NONE for good, after which it
-accepts untrusted certificates even from a single thread. Measured on the dev
-machine: 60/60 concurrent requests to an untrusted-root host accepted with a
-shared context, 0/60 with per-thread contexts. Linux is unaffected.
+This is a security requirement, not tidiness: don't share truststore contexts
+across threads (see sethmlarson/truststore#209). tests/test_images.py guards it.
 """
 
 from __future__ import annotations

@@ -260,8 +260,8 @@ def test_failures_are_logged_and_counted_by_reason(caplog):
 
 
 def test_each_worker_thread_gets_its_own_tls_session():
-    # Regression guard: a truststore SSLContext shared across threads let concurrent
-    # requests skip certificate verification (see src/images.py docstring).
+    # Regression guard: truststore contexts must not be shared across threads
+    # (see sethmlarson/truststore#209 and the src/images.py docstring).
     with ThreadPoolExecutor(4) as pool:
         ids = set(pool.map(lambda _: (threading.get_ident(), id(images.thread_session())), range(40)))
     threads = {t for t, _ in ids}
@@ -276,7 +276,7 @@ def test_each_worker_thread_gets_its_own_tls_session():
 
 BAD_CERT_URL = "https://untrusted-root.badssl.com/"
 GOOD_URL = "https://dodo.ac/np/images/4/4f/Ace_NH_Villager_Icon.png"
-BUG_PLATFORMS = ("win32", "darwin")  # truststore backends that toggle verify_mode
+BUG_PLATFORMS = ("win32", "darwin")  # truststore backends affected by truststore#209
 
 
 def _concurrent_probe(get_session) -> list[tuple[str, str]]:
@@ -314,7 +314,7 @@ def test_concurrent_fetches_reject_untrusted_certificates():
 
 
 @pytest.mark.network
-@pytest.mark.skipif(sys.platform not in BUG_PLATFORMS, reason="the truststore bug is Windows/macOS-only")
+@pytest.mark.skipif(sys.platform not in BUG_PLATFORMS, reason="truststore#209 affects Windows/macOS only")
 # Accepting bad certificates is the point of this test; urllib3 rightly warns about it.
 @pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
 def test_regression_check_would_catch_a_reverted_fix():
@@ -322,8 +322,8 @@ def test_regression_check_would_catch_a_reverted_fix():
     the probe above must see bad certificates accepted on this platform.
 
     This proves the regression test is actually guarding something on this runner.
-    If it starts failing, the bug no longer reproduces here (e.g. fixed upstream
-    in truststore): the per-thread sessions may no longer be needed, and the
+    If it starts failing, truststore#209 no longer reproduces here (e.g. fixed
+    upstream): the per-thread sessions may no longer be needed, and the
     regression test above has stopped proving anything on this platform.
     """
     shared = images.build_session()
@@ -332,10 +332,10 @@ def test_regression_check_would_catch_a_reverted_fix():
     accepted = bad.count("ok")
     if not accepted and bad.count("SSLError") < len(bad) // 2:
         # Most probes never reached a TLS handshake: the test host is unreachable,
-        # so this run can't say whether the bypass still reproduces.
+        # so this run can't say whether the issue still reproduces.
         pytest.skip(f"inconclusive: only {bad.count('SSLError')} of {len(bad)} probes reached TLS")
     assert accepted > 0, (
-        f"CANARY, not an app failure: the truststore shared-context bypass no longer "
+        f"CANARY, not an app failure: the truststore#209 shared-context issue no longer "
         f"reproduces on {sys.platform} (0 of {len(bad)} untrusted-root requests accepted with a "
         f"shared session; truststore {truststore.__version__}). The upstream bug may be "
         f"fixed. The app is still safe (it uses one session per thread), but "
