@@ -24,7 +24,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-`$env:NETWORK_TESTS="1"; pytest` also runs the live TLS checks (tests marked `network`). GitHub Actions runs the suite on Linux (Python 3.12, as deployed) on every push. The live TLS checks run on push and weekly on Linux **and Windows**: the truststore bug they guard against is Windows/macOS-only, and on Windows a mutation check confirms that reverting the per-thread fix would be caught. CI fails if the network tests were skipped rather than run.
+`$env:NETWORK_TESTS="1"; pytest` also runs the live TLS checks (tests marked `network`). GitHub Actions runs the suite on Linux (Python 3.12, as deployed) on every push. The live TLS checks run on push and weekly on Linux **and Windows**: truststore contexts mustn't be shared across threads ([truststore#209](https://github.com/sethmlarson/truststore/issues/209)), an issue affecting Windows and macOS, and on Windows a mutation check confirms that reverting the per-thread fix would be caught. CI fails if the network tests were skipped rather than run.
 
 ## How it's built
 
