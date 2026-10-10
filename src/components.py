@@ -112,6 +112,8 @@ _CSS = f"""
 .vx-facts dd {{ margin: 0; }}
 .vx-quote {{ border-left: 3px solid rgba(128,128,128,0.45); padding: 0.1rem 0 0.1rem 0.8rem;
             font-style: italic; opacity: 0.8; margin: 0.4rem 0; }}
+.vx-match {{ text-align: center; font-size: 0.8rem; line-height: 1.35; margin-top: 0.15rem; }}
+.vx-miss {{ text-align: center; font-size: 0.75rem; line-height: 1.3; opacity: 0.6; }}
 .vx-swatch {{ display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 0.9rem; }}
 .vx-dot {{ width: 0.9rem; height: 0.9rem; border-radius: 50%; display: inline-block;
           border: 1px solid rgba(128,128,128,0.6); }}
@@ -217,6 +219,29 @@ def _game(code: object) -> str:
     return html.escape(GAME_NAMES.get(code, code)) if isinstance(code, str) else UNKNOWN
 
 
+# How a matched/missed answer reads on a card. Species and personality read on
+# their own ("Cat", "Peppy"); the rest need a word of context ("Fashion hobby").
+_ANSWER_SUFFIX = {"hobby": " hobby", "styles": " style", "colors": ""}
+
+
+def _answer(facet: str, value: str) -> str:
+    return html.escape(f"{value}{_ANSWER_SUFFIX.get(facet, '')}")
+
+
+def match_note_html(matched: tuple, missed: tuple, score: int, total: int) -> str:
+    """Why a villager is in the results: e.g. "Matches 3 of 4: Cat, Peppy, Fashion hobby"."""
+    headline = f"Matches all {total}" if score == total and total > 1 else (
+        "Matches" if total == 1 else f"Matches {score} of {total}"
+    )
+    parts = [
+        f'<div class="vx-match"><strong>{headline}</strong>: '
+        f"{', '.join(_answer(f, v) for f, v in matched)}</div>"
+    ]
+    if missed:
+        parts.append(f'<div class="vx-miss">Not: {", ".join(_answer(f, v) for f, v in missed)}</div>')
+    return "".join(parts)
+
+
 # --------------------------------------------------------------------- card
 
 
@@ -225,8 +250,14 @@ def _request_details(key: str) -> None:
     st.session_state[_DETAIL_REQUESTED] = True
 
 
-def villager_card(key: str, villager: pd.Series, image: bytes | None, loading: bool) -> None:
-    """One villager: image (placeholder while loading or if unavailable), name, key facts."""
+def villager_card(
+    key: str, villager: pd.Series, image: bytes | None, loading: bool, note_html: str | None = None
+) -> None:
+    """One villager: image (placeholder while loading or if unavailable), name, key facts.
+
+    `note_html` is an optional extra line (Match's "why it matched"). It must be
+    built from escaped text, e.g. by match_note_html.
+    """
     with st.container(border=True, width=CARD_WIDTH, horizontal_alignment="center", gap="xsmall"):
         # Size via the container, not st.image(width=...): an int width makes
         # Streamlit downscale the 2x thumbnail server-side, losing HiDPI sharpness.
@@ -235,6 +266,8 @@ def villager_card(key: str, villager: pd.Series, image: bytes | None, loading: b
             st.image(image if image is not None else fallback, width="stretch")
         st.html(chip_html(villager["name"], villager["title_color"]))
         st.html(card_meta_html(villager))
+        if note_html:
+            st.html(note_html)
         if not villager["in_nh"]:
             st.badge("Not in New Horizons", color="gray")
         st.button(
@@ -254,8 +287,9 @@ def _chains(villagers: pd.DataFrame) -> list[list[str]]:
     return [image_candidates(v.icon_url, v.image_url) for v in villagers.itertuples()]
 
 
-def _render_grid(villagers: pd.DataFrame) -> None:
+def _render_grid(villagers: pd.DataFrame, notes: dict[str, str] | None = None) -> None:
     """Fragment body: draw every card from whatever is cached right now. Never blocks."""
+    notes = notes or {}
     cache = get_thumbnail_cache()
     chains = _chains(villagers)
     cache.prefetch(chains, budget=0)  # schedule next candidates (e.g. art after a dead icon)
@@ -266,7 +300,9 @@ def _render_grid(villagers: pd.DataFrame) -> None:
         for (key, villager), chain in zip(villagers.iterrows(), chains):
             resolved = cache.resolve(chain)
             pending += resolved.state == "pending"
-            villager_card(key, villager, resolved.image, loading=resolved.state == "pending")
+            villager_card(
+                key, villager, resolved.image, loading=resolved.state == "pending", note_html=notes.get(key)
+            )
 
     if st.session_state.get(_DETAIL_REQUESTED):
         st.session_state[_DETAIL_REQUESTED] = False
@@ -284,11 +320,16 @@ def warm_images(villagers: pd.DataFrame) -> None:
     get_thumbnail_cache().prefetch(_chains(villagers), budget=0)
 
 
-def villager_grid(villagers: pd.DataFrame, upcoming: pd.DataFrame | None = None) -> None:
+def villager_grid(
+    villagers: pd.DataFrame,
+    upcoming: pd.DataFrame | None = None,
+    notes: dict[str, str] | None = None,
+) -> None:
     """Render cards for `villagers` at once; images fill in as they arrive.
 
     `upcoming` (the next page, if any) is fetched in the background so that
-    "Show more" is instant.
+    "Show more" is instant. `notes` maps villager key to an extra escaped HTML
+    line for that card.
     """
     st.session_state[_DETAIL_REQUESTED] = False  # this full run will open any dialog itself
     cache = get_thumbnail_cache()
@@ -307,7 +348,7 @@ def villager_grid(villagers: pd.DataFrame, upcoming: pd.DataFrame | None = None)
     st.session_state[_POLLING] = polling
 
     grid = st.fragment(_render_grid, run_every=POLL_SECONDS if polling else None)
-    grid(villagers)
+    grid(villagers, notes)
 
     if pending and overdue:
         left, right = st.columns([4, 1], vertical_alignment="center")

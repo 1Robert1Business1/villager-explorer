@@ -37,6 +37,7 @@ _warm_default_page()
 
 pages = [
     st.Page("views/browse.py", title="Browse", icon=":material/grid_view:", default=True),
+    st.Page("views/match.py", title="Find your match", icon=":material/favorite:", url_path="match"),
     st.Page("views/diagnostics.py", title="Diagnostics", url_path="diagnostics", visibility="hidden"),
 ]
 page = st.navigation(pages, position="top")
