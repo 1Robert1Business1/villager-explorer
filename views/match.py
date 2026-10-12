@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src.components import PAGE_SIZE, match_note_html, villager_details, villager_grid
+from src.components import PAGE_SIZE, compare_shortcut, match_note_html, villager_details, villager_grid
 from src.data import load_villagers
 from src.filters import FACETS, MATCH_FACETS, base_pool, facet_options, rank_matches
 
@@ -123,6 +123,7 @@ def render() -> None:
         key: match_note_html(row.matched, row.missed, row.match_score, row.match_total)
         for key, row in zip(shown.index, shown.itertuples())
     }
+    compare_shortcut()
     villager_grid(shown, upcoming=ranked.iloc[limit : limit + PAGE_SIZE], notes=notes)
 
     if len(shown) < len(ranked):

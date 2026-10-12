@@ -10,6 +10,7 @@ from src.components import (
     _safe_colour,
     card_meta_html,
     chip_html,
+    compare_table_html,
     contrast_ratio,
     details_appearances_html,
     details_favourites_html,
@@ -135,6 +136,46 @@ def test_match_note_escapes_dataset_values(hostile):
     note = match_note_html((("species", hostile),), (("hobby", hostile),), 1, 2)
     assert "<script" not in note and "<img" not in note and "<b>" not in note
     assert hostile in _visible_text(note)
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_compare_table_escapes_dataset_text(villagers, hostile):
+    from src.compare import comparison_rows
+
+    a = _hostile_villager(villagers, hostile)
+    b = villagers.loc["Marshal"].copy()
+    selected = pd.DataFrame([a, b], index=["Ace", "Marshal"])
+    rows = comparison_rows(selected)
+    table = compare_table_html(selected, rows, {"Ace": b"png", "Marshal": b"png"})
+    assert "<script" not in table and "<img src=x" not in table and "<b>" not in table
+    assert hostile in _visible_text(table)
+    # Names land in data-name attributes too, which must not break out of the quotes.
+    assert 'data-name="' + html.escape(hostile, quote=True) + '"' in table
+
+
+def test_compare_table_disambiguates_the_two_carmens_everywhere(villagers):
+    from src.compare import comparison_rows, picker_labels
+
+    selected = villagers.loc[["Carmen", "Carmen_(mouse)"]]
+    table = compare_table_html(
+        selected, comparison_rows(selected), {"Carmen": b"x", "Carmen_(mouse)": b"x"}, labels=picker_labels(villagers)
+    )
+    # Narrow-layout value labels and image alt text never say just "Carmen".
+    assert 'data-name="Carmen"' not in table and 'alt="Carmen"' not in table
+    assert 'data-name="Carmen (Rabbit)"' in table and 'data-name="Carmen (Mouse)"' in table
+    assert ">Rabbit</div>" in table and ">Mouse</div>" in table  # species under each chip
+
+
+def test_compare_table_marks_shared_rows_and_values(villagers):
+    from src.compare import comparison_rows
+
+    selected = villagers.loc[["Raymond", "Marshal"]]
+    table = compare_table_html(selected, comparison_rows(selected), {"Raymond": b"x", "Marshal": b"x"})
+    row = lambda label: "<tr" + table.split(f">{label}<")[0].rsplit("<tr", 1)[1]  # noqa: E731
+    assert 'class="vx-same"' in row("Personality")  # both Smug
+    assert 'class="vx-same"' not in row("Species")  # Cat vs Squirrel
+    shared_styles = set(selected.at["Raymond", "styles"]) & set(selected.at["Marshal", "styles"])
+    assert table.count("(shared by all)") >= len(shared_styles)
 
 
 def test_card_meta_hides_icon_names_from_screen_readers(villagers):

@@ -31,6 +31,7 @@ on_dismiss clears the selection, so it stays open across reruns until closed.
 
 from __future__ import annotations
 
+import base64
 import html
 import re
 import time
@@ -38,6 +39,7 @@ import time
 import pandas as pd
 import streamlit as st
 
+from src import compare
 from src.filters import UNKNOWN
 from src.images import (
     get_thumbnail_cache,
@@ -58,10 +60,16 @@ MAX_POLL_SECONDS = 20  # stop polling after this; leftovers get a refresh note
 DETAIL_IMAGE_BUDGET = 6.0  # s the dialog waits for the villager's full artwork
 
 DETAIL_KEY = "details_villager"  # which villager the dialog shows (None = closed)
-_DETAIL_REQUESTED = "details_requested"  # set by a click inside the fragment
+# Set by a click inside the grid fragment (Details, Compare) whose effect lives
+# outside it: the dialog, the Compare count in the navigation.
+_FULL_RERUN = "grid_needs_full_rerun"
+COMPARE_KEY = "compare_keys"  # selected villager keys, shared by every view
+COMPARE_NOTICE = "compare_notice"  # a refusal message to show once (e.g. Compare is full)
 _POLLING = "grid_polling"
 _POLL_PAGE = "grid_poll_page"
 _POLL_STARTED = "grid_poll_started"
+# True while the grid fragment is executing as part of a full run (not its own rerun).
+_IN_FULL_RUN = "grid_in_full_run"
 
 # Name-chip background for villagers without wiki colours (the 73 non-NH villagers).
 DEFAULT_CHIP_BG = "#e8eee4"
@@ -93,6 +101,37 @@ COLOUR_SWATCHES = {
     "Colorful": "conic-gradient(#d64545, #f2cf2e, #3a9d4a, #3069d0, #8a58cc, #d64545)",
 }
 
+# Narrow comparison layout (phones, or a main column squeezed by the sidebar): no
+# sideways scrolling. Villagers sit two to a row in the header, and each attribute
+# becomes a block whose values are labelled with the villager's name. It switches
+# on the width the table actually gets (a container query), at the point where
+# its columns would drop below a readable width for that many villagers.
+CMP_LABEL_PX, CMP_COLUMN_PX = 136, 140
+
+
+def _compare_narrow_css() -> str:
+    rules = []
+    for n in range(1, compare.MAX_COMPARE + 1):
+        p = f".vx-n{n}"
+        rules.append(
+            f"@container (max-width: {CMP_LABEL_PX + n * CMP_COLUMN_PX}px) {{\n"
+            f"  {p} .vx-cmp, {p} .vx-cmp thead, {p} .vx-cmp tbody, {p} .vx-cmp tr {{ display: block; width: 100%; }}\n"
+            f"  {p} .vx-cmp thead tr {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }}\n"
+            f"  {p} .vx-cmp thead th {{ display: block; width: auto; border-bottom: none; }}\n"
+            f"  {p} .vx-cmp thead th.vx-cmp-corner {{ display: none; }}\n"
+            f"  {p} .vx-cmp tbody tr {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));"
+            " border-bottom: 1px solid rgba(128,128,128,0.25); }\n"
+            f"  {p} .vx-cmp tbody th {{ grid-column: 1 / -1; width: auto; border-bottom: none; padding-bottom: 0.1rem; }}\n"
+            f"  {p} .vx-cmp td {{ display: block; text-align: left; border-bottom: none; }}\n"
+            f"  {p} .vx-cmp td::before {{ content: attr(data-name); display: block; font-size: 0.72rem; opacity: 0.6; }}\n"
+            f"  {p} .vx-cmp-img {{ width: 72px; height: 72px; }}\n"
+            "}"
+        )
+    return "\n".join(rules)
+
+
+_COMPARE_NARROW_CSS = _compare_narrow_css()
+
 # One stylesheet for every st.html block. Classes, not data-driven inline styles;
 # the only per-villager style values are validated hex colours (see _safe_colour).
 # Secondary text uses opacity on the inherited colour so it suits light and dark themes.
@@ -114,13 +153,34 @@ _CSS = f"""
             font-style: italic; opacity: 0.8; margin: 0.4rem 0; }}
 .vx-match {{ text-align: center; font-size: 0.8rem; line-height: 1.35; margin-top: 0.15rem; }}
 .vx-miss {{ text-align: center; font-size: 0.75rem; line-height: 1.3; opacity: 0.6; }}
+/* The layout switches on the width the table actually gets (container query), not
+   the screen width: an open sidebar can squeeze four columns on a wide screen. */
+.vx-cmp-wrap {{ container-type: inline-size; width: 100%; }}
+.vx-cmp thead .vx-chip {{ white-space: nowrap; overflow-wrap: normal; }}
+.vx-cmp {{ width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 0.9rem; }}
+.vx-cmp th, .vx-cmp td {{ padding: 0.45rem 0.5rem; text-align: center; vertical-align: middle;
+                         border-bottom: 1px solid rgba(128,128,128,0.25); overflow-wrap: anywhere; }}
+.vx-cmp thead th {{ font-weight: 400; border-bottom: 2px solid rgba(128,128,128,0.35); }}
+.vx-cmp tbody th {{ text-align: left; font-weight: 600; }}
+.vx-cmp-corner, .vx-cmp tbody th {{ width: 8.5rem; }}
+.vx-cmp-img {{ width: 96px; height: 96px; display: block; margin: 0 auto 0.2rem; }}
+.vx-cmp-badge {{ font-size: 0.72rem; opacity: 0.7; }}
+.vx-cmp tr.vx-same > * {{ background: rgba(70, 170, 110, 0.14); }}
+.vx-same-tag {{ display: inline-block; margin-left: 0.35rem; padding: 0 0.45rem; border-radius: 999px;
+               font-size: 0.7rem; font-weight: 600; background: rgba(70, 170, 110, 0.32); }}
+.vx-unknown {{ opacity: 0.55; font-style: italic; }}
+.vx-chip-sm {{ display: inline-flex; align-items: center; gap: 0.25rem; margin: 0.1rem 0.15rem;
+              padding: 0.05rem 0.45rem; border-radius: 999px; font-size: 0.8rem;
+              border: 1px solid rgba(128,128,128,0.35); }}
+.vx-chip-sm.vx-common {{ font-weight: 600; border-color: rgba(70, 170, 110, 0.9); background: rgba(70, 170, 110, 0.18); }}
+{_COMPARE_NARROW_CSS}
 .vx-swatch {{ display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 0.9rem; }}
 .vx-dot {{ width: 0.9rem; height: 0.9rem; border-radius: 50%; display: inline-block;
           border: 1px solid rgba(128,128,128,0.6); }}
 """
 
 
-def _inject_css() -> None:
+def inject_css() -> None:
     """Style-only st.html goes to the event container: takes no space, applies page-wide."""
     st.html(f"<style>{_CSS}</style>")
 
@@ -247,16 +307,53 @@ def match_note_html(matched: tuple, missed: tuple, score: int, total: int) -> st
 
 def _request_details(key: str) -> None:
     st.session_state[DETAIL_KEY] = key
-    st.session_state[_DETAIL_REQUESTED] = True
+    st.session_state[_FULL_RERUN] = True
+
+
+def compare_selection() -> tuple[str, ...]:
+    return tuple(st.session_state.get(COMPARE_KEY, ()))
+
+
+def set_compare_selection(keys) -> None:
+    st.session_state[COMPARE_KEY] = list(keys)
+
+
+def compare_shortcut() -> None:
+    """In-page link to Compare with the selection count.
+
+    The navigation also shows the count, but on phones Streamlit folds the
+    navigation into the collapsed sidebar, so this keeps it visible at any width.
+    """
+    count = len(compare_selection())
+    if count:
+        st.page_link(
+            "views/compare.py",
+            label=f"Compare ({count} selected)",
+            icon=":material/compare_arrows:",
+        )
+
+
+def _toggle_compare(key: str) -> None:
+    change = compare.toggle(compare_selection(), key, valid={key})  # key comes from the dataset
+    set_compare_selection(change.keys)
+    if change.message:
+        st.session_state[COMPARE_NOTICE] = change.message
+    st.session_state[_FULL_RERUN] = True  # so the Compare count in the navigation updates
 
 
 def villager_card(
-    key: str, villager: pd.Series, image: bytes | None, loading: bool, note_html: str | None = None
+    key: str,
+    villager: pd.Series,
+    image: bytes | None,
+    loading: bool,
+    note_html: str | None = None,
+    selected: tuple[str, ...] = (),
 ) -> None:
     """One villager: image (placeholder while loading or if unavailable), name, key facts.
 
     `note_html` is an optional extra line (Match's "why it matched"). It must be
-    built from escaped text, e.g. by match_note_html.
+    built from escaped text, e.g. by match_note_html. `selected` is the current
+    Compare selection, for the card's add/remove control.
     """
     with st.container(border=True, width=CARD_WIDTH, horizontal_alignment="center", gap="xsmall"):
         # Size via the container, not st.image(width=...): an int width makes
@@ -270,14 +367,31 @@ def villager_card(
             st.html(note_html)
         if not villager["in_nh"]:
             st.badge("Not in New Horizons", color="gray")
-        st.button(
-            "Details",
-            key=f"details-{key}",
-            type="tertiary",
-            icon=":material/info:",
-            on_click=_request_details,
-            args=(key,),
-        )
+        comparing = key in selected
+        full = len(selected) >= compare.MAX_COMPARE and not comparing
+        with st.container(horizontal=True, horizontal_alignment="center", gap="xxsmall"):
+            st.button(
+                "Details",
+                key=f"details-{key}",
+                type="tertiary",
+                icon=":material/info:",
+                on_click=_request_details,
+                args=(key,),
+            )
+            st.button(
+                "Comparing" if comparing else "Compare",
+                key=f"compare-{key}",
+                type="tertiary",
+                icon=":material/check_circle:" if comparing else ":material/add_circle:",
+                on_click=_toggle_compare,
+                args=(key,),
+                disabled=full,
+                help=(
+                    "Remove from Compare" if comparing
+                    else compare.FULL_MESSAGE if full
+                    else "Add to Compare"
+                ),
+            )
 
 
 # --------------------------------------------------------------------- grid
@@ -294,21 +408,27 @@ def _render_grid(villagers: pd.DataFrame, notes: dict[str, str] | None = None) -
     chains = _chains(villagers)
     cache.prefetch(chains, budget=0)  # schedule next candidates (e.g. art after a dead icon)
 
-    _inject_css()
+    inject_css()
+    selected = compare_selection()
     with st.container(horizontal=True, gap="xsmall", key=GRID_KEY):
         pending = 0
         for (key, villager), chain in zip(villagers.iterrows(), chains):
             resolved = cache.resolve(chain)
             pending += resolved.state == "pending"
             villager_card(
-                key, villager, resolved.image, loading=resolved.state == "pending", note_html=notes.get(key)
+                key, villager, resolved.image, loading=resolved.state == "pending",
+                note_html=notes.get(key), selected=selected,
             )
 
-    if st.session_state.get(_DETAIL_REQUESTED):
-        st.session_state[_DETAIL_REQUESTED] = False
-        st.rerun()  # the dialog opens on a full run (see module docstring)
+    if st.session_state.get(_FULL_RERUN):
+        st.session_state[_FULL_RERUN] = False
+        st.rerun()  # the dialog / Compare count live outside the fragment (see module docstring)
 
-    if st.session_state.get(_POLLING):
+    # Never escalate from inside a full run: if images arrive while the page's
+    # first run is still executing, an st.rerun() here would cut that run short
+    # and immediately start another. The fragment's next poll (POLL_SECONDS later,
+    # after the full run has finished) switches polling off instead.
+    if st.session_state.get(_POLLING) and not st.session_state.get(_IN_FULL_RUN):
         overdue = time.monotonic() - st.session_state.get(_POLL_STARTED, 0) > MAX_POLL_SECONDS
         if not pending or overdue:
             st.session_state[_POLLING] = False
@@ -331,7 +451,7 @@ def villager_grid(
     "Show more" is instant. `notes` maps villager key to an extra escaped HTML
     line for that card.
     """
-    st.session_state[_DETAIL_REQUESTED] = False  # this full run will open any dialog itself
+    st.session_state[_FULL_RERUN] = False  # this run is already a full run
     cache = get_thumbnail_cache()
     chains = _chains(villagers)
     cache.prefetch(chains, budget=INITIAL_IMAGE_BUDGET)
@@ -348,7 +468,11 @@ def villager_grid(
     st.session_state[_POLLING] = polling
 
     grid = st.fragment(_render_grid, run_every=POLL_SECONDS if polling else None)
-    grid(villagers, notes)
+    st.session_state[_IN_FULL_RUN] = True
+    try:
+        grid(villagers, notes)
+    finally:
+        st.session_state[_IN_FULL_RUN] = False
 
     if pending and overdue:
         left, right = st.columns([4, 1], vertical_alignment="center")
@@ -416,7 +540,7 @@ def details_appearances_html(villager: pd.Series) -> str:
 
 
 def _details_body(villager: pd.Series) -> None:
-    _inject_css()
+    inject_css()
     cache = get_thumbnail_cache()
     chain = image_candidates(villager["image_url"], villager["icon_url"])  # full art first
     with st.spinner("Loading artwork…"):
@@ -466,3 +590,84 @@ def villager_details(villagers: pd.DataFrame) -> None:
     # The villager's name appears in the body, rendered through st.html.
     dialog = st.dialog("Villager details", width="medium", on_dismiss=_close_details)
     dialog(_details_body)(villagers.loc[key])
+
+
+# ------------------------------------------------------------------ compare
+
+
+def _data_uri(png: bytes) -> str:
+    """Our own re-encoded PNG thumbnails, inlined so the whole table is one st.html block."""
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+_SHARED_SR = '<span class="vx-sr"> (shared by all)</span>'
+
+
+def _compare_value(row: compare.CompareRow, value) -> str:
+    if row.multi:
+        if not value:
+            return f'<span class="vx-unknown">{UNKNOWN}</span>'
+        chips = []
+        for v in value:
+            shared = v in row.common
+            dot = (
+                f'<span class="vx-dot" style="background:{COLOUR_SWATCHES.get(v, "#cccccc")}"></span>'
+                if row.label == "Colours" else ""
+            )
+            mark = "✓ " if shared else ""
+            chips.append(
+                f'<span class="vx-chip-sm{" vx-common" if shared else ""}">{dot}{mark}{html.escape(v)}'
+                f'{_SHARED_SR if shared else ""}</span>'
+            )
+        return "".join(chips)
+    if value is None:
+        return f'<span class="vx-unknown">{UNKNOWN}</span>'
+    text = html.escape(value)
+    return f"“{text}”" if row.label == "Catchphrase" else text
+
+
+def compare_table_html(
+    selected: pd.DataFrame,
+    rows: list[compare.CompareRow],
+    images: dict[str, bytes],
+    labels: dict[str, str] | None = None,
+) -> str:
+    """Villagers as columns, attributes as aligned rows; shared rows and values marked.
+
+    `labels` are the disambiguated picker labels (compare.picker_labels): where
+    two villagers share a name, every place a name identifies a column uses the
+    label ("Carmen (Mouse)") and the header shows the species under the chip.
+    Every dataset value is escaped; labels also appear in data-name attributes
+    (escaped with quote=True) for the narrow layout's per-value labels.
+    """
+    labels = labels or {}
+    names = [html.escape(labels.get(key, str(v["name"])), quote=True) for key, v in selected.iterrows()]
+    head = []
+    for (key, v), name in zip(selected.iterrows(), names):
+        collides = labels.get(key, v["name"]) != v["name"]
+        species = f'<div class="vx-cmp-badge">{html.escape(str(v["species"]))}</div>' if collides else ""
+        badge = "" if v["in_nh"] else '<div class="vx-cmp-badge">Not in New Horizons</div>'
+        head.append(
+            f'<th scope="col"><img class="vx-cmp-img" src="{_data_uri(images[key])}" alt="{name}">'
+            f'{chip_html(v["name"], v["title_color"])}{species}{badge}</th>'
+        )
+    body = []
+    for row in rows:
+        tag = '<span class="vx-same-tag">Same</span>' if row.same else ""
+        cells = "".join(
+            f'<td data-name="{name}">{_compare_value(row, value)}</td>' for name, value in zip(names, row.values)
+        )
+        row_class = ' class="vx-same"' if row.same else ""
+        body.append(f'<tr{row_class}><th scope="row">{row.label}{tag}</th>{cells}</tr>')
+    return (
+        f'<div class="vx-cmp-wrap vx-n{len(selected)}"><table class="vx-cmp"><thead><tr><th class="vx-cmp-corner"></th>'
+        f'{"".join(head)}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+    )
+
+
+def compare_images(selected: pd.DataFrame, budget: float = 3.0) -> dict[str, bytes]:
+    """Thumbnail bytes for each selected villager (placeholder if unavailable)."""
+    cache = get_thumbnail_cache()
+    chains = {key: image_candidates(v.icon_url, v.image_url) for key, v in zip(selected.index, selected.itertuples())}
+    cache.prefetch(list(chains.values()), budget=budget)
+    return {key: cache.resolve(chain).image or placeholder_bytes() for key, chain in chains.items()}

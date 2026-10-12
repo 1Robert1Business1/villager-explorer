@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src.components import PAGE_SIZE, villager_details, villager_grid
+from src.components import PAGE_SIZE, compare_shortcut, villager_details, villager_grid
 from src.data import load_villagers
 from src.filters import (
     FACETS,
@@ -184,6 +184,7 @@ def render() -> None:
     else:
         st.caption(f"{len(matches)} of {in_scope} villagers {scope} match. Showing {len(shown)}.")
 
+    compare_shortcut()
     villager_grid(shown, upcoming=matches.iloc[limit : limit + PAGE_SIZE])
     villager_details(villagers)
 
