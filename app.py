@@ -9,7 +9,7 @@ import logging
 
 import streamlit as st
 
-from src.components import PAGE_SIZE, warm_images
+from src.components import COMPARE_NOTICE, PAGE_SIZE, compare_selection, warm_images
 from src.data import load_villagers
 from src.filters import SORT_OPTIONS, Criteria, apply_criteria, sort_villagers
 
@@ -35,9 +35,21 @@ def _warm_default_page() -> bool:
 
 _warm_default_page()
 
+# A refusal from a Compare button (e.g. already 4 selected), shown once.
+if notice := st.session_state.pop(COMPARE_NOTICE, None):
+    st.toast(notice, icon=":material/info:")
+
+# The Compare page title carries the selection count, so it's visible from every view.
+compare_count = len(compare_selection())
 pages = [
     st.Page("views/browse.py", title="Browse", icon=":material/grid_view:", default=True),
     st.Page("views/match.py", title="Find your match", icon=":material/favorite:", url_path="match"),
+    st.Page(
+        "views/compare.py",
+        title=f"Compare ({compare_count})" if compare_count else "Compare",
+        icon=":material/compare_arrows:",
+        url_path="compare",
+    ),
     st.Page("views/diagnostics.py", title="Diagnostics", url_path="diagnostics", visibility="hidden"),
 ]
 page = st.navigation(pages, position="top")
