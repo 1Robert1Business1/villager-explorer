@@ -6,6 +6,7 @@ fragments, the share-link handling) is the real code.
 """
 
 import io
+import time
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,46 @@ def _app() -> AppTest:
 
 def _html(at) -> str:
     return "".join(el.proto.body for el in at.get("html"))
+
+
+# ------------------------------------------------ image polling vs. main run
+
+
+class OnePendingForever(InstantCache):
+    """One villager's image never arrives, so the grid polls until its cap.
+
+    Like the real cache, prefetch blocks for its whole time budget when an image
+    it was asked for never resolves, so any code that waits on images shows up
+    in the timing.
+    """
+
+    def prefetch(self, chains, budget):
+        if any(c and "Ace_NH_Villager_Icon" in c[0] for c in chains):
+            time.sleep(budget)
+            return 1
+        return 0
+
+    def resolve(self, chain):
+        if chain and "Ace_NH_Villager_Icon" in chain[0]:
+            return Resolved(None, None, "pending")
+        return super().resolve(chain)
+
+
+def test_a_stuck_image_never_holds_up_the_page(monkeypatch):
+    # Regression guard for the "grey sidebar filters" investigation: whatever the
+    # image cache is doing, the page's main run must finish promptly with every
+    # sidebar widget in place, and the stuck image must show the loading leaf.
+    monkeypatch.setattr(components, "get_thumbnail_cache", lambda: OnePendingForever())
+    started = time.perf_counter()
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.run()
+    elapsed = time.perf_counter() - started
+    assert not at.exception, at.exception
+    assert elapsed < components.MAX_POLL_SECONDS / 2, f"main run took {elapsed:.1f}s"
+    assert at.text_input(key="browse_search") is not None
+    assert at.toggle(key="browse_nh_only").value is True
+    assert len(at.get("image")) >= 36  # every card drawn, Ace with the placeholder
+    assert at.session_state["grid_polling"] is True  # still polling for Ace, without blocking
 
 
 # ----------------------------------------------------- cross-view persistence
