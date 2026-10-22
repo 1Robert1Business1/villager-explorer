@@ -26,6 +26,7 @@ from src.data import load_villagers
 
 PICKER = "compare_picker"
 LAST_LINK = "compare_last_link"  # the ?v= value this session last wrote or applied
+LINK_IGNORED = "compare_link_ignored"  # skipped-entry count, carried across the rerun below
 
 EXAMPLES = {
     "Raymond & Marshal": ("Raymond", "Marshal"),
@@ -42,16 +43,24 @@ def _choose(keys: tuple[str, ...]) -> None:
     set_compare_selection(compare.sanitize(keys, load_villagers().index))
 
 
-def _apply_link(valid) -> int:
-    """If the page was opened with a new ?v= link, adopt it. Returns tokens ignored."""
+def _apply_link(valid) -> None:
+    """If the page was opened with a new ?v= link, adopt it.
+
+    app.py builds the navigation (with its "Compare (n)" count) before this page
+    runs, so a link that changes the selection triggers one rerun to bring the
+    count up to date. LAST_LINK is recorded first, so the rerun doesn't re-apply.
+    """
     raw = st.query_params.get_all("v")
     joined = ",".join(raw)
     if not joined or joined == st.session_state.get(LAST_LINK):
-        return 0
+        return
     keys, ignored = compare.parse_share_param(raw, valid)
+    before = compare_selection()
     set_compare_selection(keys)
     st.session_state[LAST_LINK] = joined
-    return ignored
+    st.session_state[LINK_IGNORED] = ignored
+    if tuple(keys) != tuple(before):
+        st.rerun()
 
 
 def _write_link(keys: tuple[str, ...]) -> None:
@@ -65,7 +74,8 @@ def _write_link(keys: tuple[str, ...]) -> None:
 
 def render() -> None:
     villagers = load_villagers()
-    ignored = _apply_link(villagers.index)
+    _apply_link(villagers.index)
+    ignored = st.session_state.pop(LINK_IGNORED, 0)
     selected = compare.sanitize(compare_selection(), villagers.index)
     set_compare_selection(selected)
     labels = compare.picker_labels(villagers)

@@ -161,6 +161,24 @@ def test_share_link_opens_the_comparison_and_ignores_unknown_entries():
     assert "vx-same" in _html(at)  # Raymond and Marshal are both Smug
 
 
+def _nav_title(at, url_path: str) -> str:
+    # AppTest keeps the registered pages (with their current titles) on a private
+    # attribute; there's no public accessor in Streamlit 1.64.
+    return next(p["page_name"] for p in at._registered_pages.values() if p["url_pathname"] == url_path)
+
+
+def test_navigation_count_reflects_a_share_link_on_first_load():
+    # Found on the live site: app.py builds the navigation before the Compare page
+    # reads the link, so the count lagged one run behind ("Compare" with 2 selected).
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.query_params["v"] = "carmen,carmen_(mouse),zzz-not-real"
+    at.switch_page("views/compare.py").run()
+    assert not at.exception, at.exception
+    assert _nav_title(at, "compare") == "Compare (2)"
+    # ...and the "skipped" notice survives the extra run.
+    assert "1 entry in the link" in " ".join(i.value for i in at.info)
+
+
 def test_hostile_share_link_text_is_never_rendered():
     at = AppTest.from_file(APP, default_timeout=30)
     at.query_params["v"] = "<script>alert(1)</script>,<img src=x onerror=alert(1)>"
