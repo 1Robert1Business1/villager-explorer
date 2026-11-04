@@ -123,7 +123,7 @@ def _compare_narrow_css() -> str:
             " border-bottom: 1px solid rgba(128,128,128,0.25); }\n"
             f"  {p} .vx-cmp tbody th {{ grid-column: 1 / -1; width: auto; border-bottom: none; padding-bottom: 0.1rem; }}\n"
             f"  {p} .vx-cmp td {{ display: block; text-align: left; border-bottom: none; }}\n"
-            f"  {p} .vx-cmp td::before {{ content: attr(data-name); display: block; font-size: 0.72rem; opacity: 0.6; }}\n"
+            f"  {p} .vx-cmp td::before {{ content: attr(data-name); display: block; font-size: 0.72rem; opacity: 0.75; }}\n"
             f"  {p} .vx-cmp-img {{ width: 72px; height: 72px; }}\n"
             "}"
         )
@@ -134,12 +134,15 @@ _COMPARE_NARROW_CSS = _compare_narrow_css()
 
 # One stylesheet for every st.html block. Classes, not data-driven inline styles;
 # the only per-villager style values are validated hex colours (see _safe_colour).
-# Secondary text uses opacity on the inherited colour so it suits light and dark themes.
+# Secondary text uses opacity on the inherited colour so it suits light and dark themes;
+# 0.75 is the floor that keeps 4.5:1 on light (test_faded_text_meets_wcag_aa_in_both_themes).
 _CSS = f"""
+/* Streamlit's captions fade to 0.6, which is 3.5:1 on the light sidebar. */
+[data-testid="stCaptionContainer"] {{ opacity: 0.75; }}
 .st-key-{GRID_KEY} {{ align-items: stretch; }}
 .vx-chip-row {{ text-align: center; line-height: 1.9; margin: 0.1rem 0 0.45rem; }}
 .vx-chip {{ padding: 0.15rem 0.7rem; border-radius: 999px; font-weight: 600; display: inline-block; }}
-.vx-meta {{ text-align: center; font-size: 0.875rem; line-height: 1.5; opacity: 0.72; }}
+.vx-meta {{ text-align: center; font-size: 0.875rem; line-height: 1.5; opacity: 0.75; }}
 .vx-icon {{ font-family: 'Material Symbols Rounded'; font-weight: 400; font-style: normal;
            font-size: 1.05em; line-height: 1; vertical-align: -0.18em; letter-spacing: normal;
            text-transform: none; white-space: nowrap; font-feature-settings: 'liga';
@@ -152,7 +155,7 @@ _CSS = f"""
 .vx-quote {{ border-left: 3px solid rgba(128,128,128,0.45); padding: 0.1rem 0 0.1rem 0.8rem;
             font-style: italic; opacity: 0.8; margin: 0.4rem 0; }}
 .vx-match {{ text-align: center; font-size: 0.8rem; line-height: 1.35; margin-top: 0.15rem; }}
-.vx-miss {{ text-align: center; font-size: 0.75rem; line-height: 1.3; opacity: 0.6; }}
+.vx-miss {{ text-align: center; font-size: 0.75rem; line-height: 1.3; opacity: 0.75; }}
 /* The layout switches on the width the table actually gets (container query), not
    the screen width: an open sidebar can squeeze four columns on a wide screen. */
 .vx-cmp-wrap {{ container-type: inline-size; width: 100%; }}
@@ -164,11 +167,11 @@ _CSS = f"""
 .vx-cmp tbody th {{ text-align: left; font-weight: 600; }}
 .vx-cmp-corner, .vx-cmp tbody th {{ width: 8.5rem; }}
 .vx-cmp-img {{ width: 96px; height: 96px; display: block; margin: 0 auto 0.2rem; }}
-.vx-cmp-badge {{ font-size: 0.72rem; opacity: 0.7; }}
+.vx-cmp-badge {{ font-size: 0.72rem; opacity: 0.75; }}
 .vx-cmp tr.vx-same > * {{ background: rgba(70, 170, 110, 0.14); }}
 .vx-same-tag {{ display: inline-block; margin-left: 0.35rem; padding: 0 0.45rem; border-radius: 999px;
                font-size: 0.7rem; font-weight: 600; background: rgba(70, 170, 110, 0.32); }}
-.vx-unknown {{ opacity: 0.55; font-style: italic; }}
+.vx-unknown {{ opacity: 0.75; font-style: italic; }}
 .vx-chip-sm {{ display: inline-flex; align-items: center; gap: 0.25rem; margin: 0.1rem 0.15rem;
               padding: 0.05rem 0.45rem; border-radius: 999px; font-size: 0.8rem;
               border: 1px solid rgba(128,128,128,0.35); }}

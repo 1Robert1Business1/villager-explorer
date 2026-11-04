@@ -9,7 +9,7 @@ import logging
 
 import streamlit as st
 
-from src.components import COMPARE_NOTICE, PAGE_SIZE, compare_selection, warm_images
+from src.components import COMPARE_NOTICE, PAGE_SIZE, compare_selection, inject_css, warm_images
 from src.data import load_villagers
 from src.filters import SORT_OPTIONS, Criteria, apply_criteria, sort_villagers
 
@@ -18,6 +18,7 @@ from src.filters import SORT_OPTIONS, Criteria, apply_criteria, sort_villagers
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 st.set_page_config(page_title="Villager Explorer", page_icon="🍃", layout="wide")
+inject_css()  # every page, so the shared caption contrast fix reaches the sidebar too
 
 
 @st.cache_resource(show_spinner=False)

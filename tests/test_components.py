@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from src.components import (
+    _CSS,
     DEFAULT_CHIP_BG,
     _nookipedia_url,
     _safe_colour,
@@ -64,6 +65,34 @@ def test_every_name_chip_in_the_dataset_meets_wcag_aa(villagers):
     backgrounds = villagers["title_color"].fillna(DEFAULT_CHIP_BG)
     worst = min(contrast_ratio(bg, readable_text_colour(bg)) for bg in backgrounds)
     assert worst >= 4.5
+
+
+# Streamlit's built-in themes: (text, background, secondary background).
+THEMES = {
+    "light": ("#31333f", "#ffffff", "#f0f2f6"),
+    "dark": ("#fafafa", "#0e1117", "#262730"),
+}
+
+
+def _faded(text: str, background: str, opacity: float) -> str:
+    """The colour the browser paints for `text` at `opacity` over `background`."""
+    mix = [
+        round(int(text[i : i + 2], 16) * opacity + int(background[i : i + 2], 16) * (1 - opacity))
+        for i in (1, 3, 5)
+    ]
+    return "#" + "".join(f"{v:02x}" for v in mix)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_faded_text_meets_wcag_aa_in_both_themes(theme):
+    # Found in the Stage 6 light-mode check: 0.6 and 0.55 passed on dark but
+    # fell to 3.3-3.7:1 on light. Every opacity in the stylesheet fades text.
+    text, *backgrounds = THEMES[theme]
+    opacities = {float(v) for v in re.findall(r"opacity:\s*([\d.]+)", _CSS)}
+    assert opacities
+    for opacity in opacities:
+        for bg in backgrounds:
+            assert contrast_ratio(_faded(text, bg, opacity), bg) >= 4.5, (theme, opacity, bg)
 
 
 # ------------------------------------------------------------ dataset text
