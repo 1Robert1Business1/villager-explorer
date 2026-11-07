@@ -157,7 +157,7 @@ def test_share_link_opens_the_comparison_and_ignores_unknown_entries():
     assert not at.exception, at.exception
     assert at.session_state[components.COMPARE_KEY] == ["Raymond", "Marshal"]
     assert "1 entry in the link" in " ".join(i.value for i in at.info)
-    assert at.query_params["v"] == ["raymond,marshal"]  # rewritten to the canonical form
+    assert at.query_params["v"] == "raymond,marshal"  # rewritten to the canonical form
     assert "vx-same" in _html(at)  # Raymond and Marshal are both Smug
 
 

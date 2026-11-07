@@ -58,6 +58,10 @@ CONNECT_TIMEOUT = 3.05
 READ_TIMEOUT = 8
 MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024  # largest real artwork is ~2.2 MB
 MAX_SOURCE_PIXELS = 25_000_000  # refuse to decode anything implausibly large
+# Every image in the dataset is a PNG. Downloaded bytes only reach the web-format
+# decoders; Pillow's legacy ones (TIFF, BMP, EPS, ...) are where most of its
+# memory-safety advisories land, and nothing here needs them.
+IMAGE_FORMATS = ("PNG", "JPEG", "WEBP")
 FAILURE_TTL = 300  # seconds before a failed URL is tried again
 MAX_CACHED = 1200  # thumbnails are ~10-15 KB, so this caps memory at roughly 15 MB
 MAX_WORKERS = 12
@@ -165,7 +169,7 @@ def to_thumbnail(data: bytes, size: int = THUMB_SIZE) -> bytes:
     1300 px-tall artwork produce cards that line up.
     """
     try:
-        with Image.open(io.BytesIO(data)) as src:
+        with Image.open(io.BytesIO(data), formats=IMAGE_FORMATS) as src:
             if src.width * src.height > MAX_SOURCE_PIXELS:
                 raise ImageFetchError(f"refusing to decode {src.width}x{src.height}")
             src.load()  # force a full decode: catches truncated files, not just bad headers

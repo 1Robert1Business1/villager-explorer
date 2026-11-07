@@ -55,6 +55,26 @@ def test_undecodable_bytes_raise_fetch_error(data):
         to_thumbnail(data)
 
 
+def encoded(fmt, mode="RGB"):
+    buf = io.BytesIO()
+    Image.new(mode, (16, 16), (200, 100, 50)[: len(mode)]).save(buf, format=fmt)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("fmt", ["JPEG", "WEBP"])
+def test_other_web_formats_still_decode(fmt):
+    assert Image.open(io.BytesIO(to_thumbnail(encoded(fmt)))).format == "PNG"
+
+
+@pytest.mark.parametrize("fmt", ["TIFF", "BMP", "PCX", "TGA"])
+def test_legacy_formats_are_never_decoded(fmt):
+    # Downloaded bytes only reach Pillow's web-image decoders. The legacy ones
+    # (TIFF, BMP, ...) carry most of Pillow's memory-safety advisories, and no
+    # image in the dataset needs them, so a valid file in one is refused.
+    with pytest.raises(ImageFetchError):
+        to_thumbnail(encoded(fmt))
+
+
 def test_refuses_implausibly_large_images(monkeypatch):
     monkeypatch.setattr(images, "MAX_SOURCE_PIXELS", 100)
     with pytest.raises(ImageFetchError, match="refusing"):
